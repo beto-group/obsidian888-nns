@@ -121,7 +121,7 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## Contact
 
-For questions, feedback, or support, please open an issue on the GitHub repository or email us at [nns@beto.group].
+For questions, feedback, or support, please open an issue on the GitHub repository or email us at [obsidian888-nns@beto.group].
 
 ---
 
