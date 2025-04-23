@@ -4,10 +4,14 @@ import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Set
 
 interface MyPluginSettings {
 	mySetting: string;
+    provider: string;
+    apiKey: string;
 }
 
 const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+	mySetting: 'default',
+    provider: 'openai',
+    apiKey: ''
 }
 
 export default class MyPlugin extends Plugin {
@@ -130,5 +134,32 @@ class SampleSettingTab extends PluginSettingTab {
 					this.plugin.settings.mySetting = value;
 					await this.plugin.saveSettings();
 				}));
+
+        // Add Provider Selection Dropdown
+        new Setting(containerEl)
+            .setName('AI Provider')
+            .setDesc('Select the AI provider to use.')
+            .addDropdown(dropdown => dropdown
+                .addOption('openai', 'OpenAI')
+                .addOption('anthropic', 'Anthropic')
+                .addOption('google', 'Google')
+                .setValue(this.plugin.settings.provider)
+                .onChange(async (value) => {
+                    this.plugin.settings.provider = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        // Add API Key Input
+        new Setting(containerEl)
+            .setName('API Key')
+            .setDesc('Enter your API key for the selected provider.')
+            .addText(text => text
+                .setPlaceholder('Enter your API key')
+                .setValue(this.plugin.settings.apiKey)
+                .onChange(async (value) => {
+                    this.plugin.settings.apiKey = value;
+                    await this.plugin.saveSettings();
+                })
+                .inputEl.type = 'password');
 	}
 }
