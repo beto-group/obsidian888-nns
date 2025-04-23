@@ -3,7 +3,7 @@
 	"name": "NNS",
 	"version": "1.0.1",
 	"minAppVersion": "1.7.2",
-	"description": "A Unified AI Gateway for Obsidian that integrates multiple AI providers with dynamic model retrieval, robust error handling, and comprehensive backup logging.",
+	"description": "A Unified AI Gateway for Obsidian that integrates multiple AI providers with code deployment capabilities",
 	"author": "BETO.GROUP",
 	"authorUrl": "https://beto.group", 
 	"fundingUrl": "https://beto.group/donate",

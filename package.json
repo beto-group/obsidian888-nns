@@ -1,7 +1,7 @@
 {
 	"name": "NNS",
 	"version": "1.0.1",
-	"description": "Unified AI Gateway for Obsidian that integrates multiple AI providers with dynamic model retrieval and robust error handling.",
+	"description": "A privacy-centric AI gateway for Obsidian that integrates multiple AI providers with secure model retrieval, robust error handling, and encrypted backup logging, ensuring user data remains protected.",
 	"main": "main.js",
 	"scripts": {
 	  "dev": "node esbuild.config.mjs",
