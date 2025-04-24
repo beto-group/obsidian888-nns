@@ -2,10 +2,10 @@ import { App } from 'obsidian';
 import { fetchOpenAIModels } from './openai';
 import { fetchLocalModels } from './local';
 import { fetchAnthropicModels } from './anthropic';
-import { fetchGroqModels } from './groq';
+import { fetchGroqModels } from './groq'; // Assuming first groq file is correct
 import { fetchGeminiModels } from './gemini';
 import { fetchOpenRouterModels } from './openrouter';
-import { fetchGrokModels } from './grok';
+import { fetchGrokModels } from './grok'; // Assuming second grok file (x.ai) is correct
 
 export interface ProviderMetadata {
 	key: string;
@@ -15,22 +15,23 @@ export interface ProviderMetadata {
 
 export const providerMetadata: Record<string, ProviderMetadata> = {
 	openai: { key: 'openai', defaultModel: 'gpt-3.5-turbo', requiresApiKey: true },
-	local: { key: 'local', defaultModel: 'llama2', requiresApiKey: false },
+	local: { key: 'local', defaultModel: 'llama2', requiresApiKey: false }, // Ollama
 	anthropic: { key: 'anthropic', defaultModel: 'claude-3-opus-20240229', requiresApiKey: true },
-	groq: { key: 'groq', defaultModel: 'mixtral-8x7b-32768', requiresApiKey: true },
-	gemini: { key: 'gemini', defaultModel: 'models/gemini-pro', requiresApiKey: true },
+	groq: { key: 'groq', defaultModel: 'mixtral-8x7b-32768', requiresApiKey: true }, // GroqCloud
+	gemini: { key: 'gemini', defaultModel: 'models/gemini-pro', requiresApiKey: true }, // Google Gemini
 	openrouter: { key: 'openrouter', defaultModel: 'openrouter/google/gemma-7b-it', requiresApiKey: true },
-	grok: { key: 'grok', defaultModel: 'grok-3-beta', requiresApiKey: true }
+	grok: { key: 'grok', defaultModel: 'grok-1', requiresApiKey: true } // x.ai Grok
 };
 
-type FetchFunction = (apiKey: string, app: App) => Promise<string[]>;
+// Updated FetchFunction type to accept optional apiKey and app
+type FetchFunction = (apiKey: string, app?: App) => Promise<string[]>;
 
 export const providerFetchers: Record<string, FetchFunction> = {
   openai: fetchOpenAIModels,
-  local: fetchLocalModels,
+  local: fetchLocalModels, // fetchLocalModels now fits the signature (implicitly)
   anthropic: fetchAnthropicModels,
-  groq: fetchGroqModels,
+  groq: fetchGroqModels, // GroqCloud fetcher
   gemini: fetchGeminiModels,
   openrouter: fetchOpenRouterModels,
-  grok: fetchGrokModels
+  grok: fetchGrokModels // x.ai Grok fetcher
 };
