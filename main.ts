@@ -13,11 +13,14 @@ import {
 	SampleSettingTab
 } from './src/settings/settings';
 
+import { SecretsManager } from './utils/secrets';
+
 /**
  * Main Plugin Class
  */
 export default class MyPlugin extends Plugin {
 	settings: MyPluginSettings;
+	secrets: SecretsManager;
 
 	/**
 	 * Plugin entry point
@@ -27,6 +30,13 @@ export default class MyPlugin extends Plugin {
 
 		// Load plugin settings
 		await this.loadSettings();
+
+		// Initialize SecretsManager
+		this.secrets = new SecretsManager(this.app);
+
+		// Example usage
+		const openai = this.secrets.getSecret("openai");
+		console.log("[MyPlugin] OpenAI Secret:", openai);
 
 		// Add ribbon icon
 		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
