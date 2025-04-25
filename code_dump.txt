@@ -201,7 +201,7 @@ import type { MyPluginSettings } from '../settings/settings';
 import type { SecretsManager } from '../utils/secrets';
 import { providerMetadata, providerFetchers } from '../settings/providers/index';
 import { TextGateway } from '../gateways/TextGateway';
-import type { LLMRequest } from '../core/Adapter';
+import type { LLMRequest, LLMResponse } from '../core/Adapter';
 
 interface PromptHistoryEntry {
   provider: string;
@@ -214,7 +214,7 @@ interface PromptHistoryEntry {
 export class AiConsoleModal extends Modal {
   private settings: MyPluginSettings;
   private secrets: SecretsManager;
-  private textGateway?: TextGateway; // Make optional to handle failure gracefully
+  private textGateway?: TextGateway;
   private container!: HTMLElement;
   private providerSelectEl!: HTMLSelectElement;
   private modelSelectEl!: HTMLSelectElement;
@@ -234,9 +234,8 @@ export class AiConsoleModal extends Modal {
     console.log('[AiConsoleModal] Opening modal...');
     this.titleEl.setText('AI Console Playground');
     this.contentEl.empty();
-    this.container = this.contentEl.createDiv({ cls: 'ai-console-container' });
+    this.container = this.contentEl.createEl('div', { cls: 'ai-console-container' });
 
-    // Initialize TextGateway with better error handling
     try {
       this.textGateway = await TextGateway.create(this.secrets, this.settings);
       console.log('[AiConsoleModal] TextGateway initialized successfully.');
@@ -246,7 +245,6 @@ export class AiConsoleModal extends Modal {
       this.container.createEl('p', { text: 'Error initializing AI Console. You can still enter prompts below, but provider/model selection may not work.' });
     }
 
-    // Gather available providers (with fallback if TextGateway fails)
     const providers: string[] = [];
     try {
       for (const key of Object.keys(this.settings.providers)) {
@@ -264,11 +262,9 @@ export class AiConsoleModal extends Modal {
       new Notice('Failed to load providers. Using fallback options.');
     }
 
-    // Controls Section
-    const controlsSection = this.container.createDiv({ cls: 'ai-console-controls' });
+    const controlsSection = this.container.createEl('div', { cls: 'ai-console-controls' });
     controlsSection.createEl('h3', { text: 'Settings' });
 
-    // Provider dropdown
     try {
       new Setting(controlsSection)
         .setName('Provider')
@@ -295,7 +291,6 @@ export class AiConsoleModal extends Modal {
       controlsSection.createEl('p', { text: 'Error loading provider dropdown.' });
     }
 
-    // Model dropdown
     try {
       new Setting(controlsSection)
         .setName('Model')
@@ -309,7 +304,6 @@ export class AiConsoleModal extends Modal {
       controlsSection.createEl('p', { text: 'Error loading model dropdown.' });
     }
 
-    // Populate models for initial provider
     if (providers.length > 0) {
       try {
         await this.updateModelDropdown(this.providerSelectEl.value);
@@ -318,8 +312,7 @@ export class AiConsoleModal extends Modal {
       }
     }
 
-    // Parameters section
-    const paramsContainer = controlsSection.createDiv({ cls: 'ai-console-params' });
+    const paramsContainer = controlsSection.createEl('div', { cls: 'ai-console-params' });
     paramsContainer.createEl('h4', { text: 'Parameters' });
 
     let tempSetting: Setting, maxTokensSetting: Setting;
@@ -353,28 +346,23 @@ export class AiConsoleModal extends Modal {
       paramsContainer.createEl('p', { text: 'Error loading max tokens input.' });
     }
 
-    // Prompt Input Section
-    const promptSection = this.container.createDiv({ cls: 'ai-console-prompt-section' });
+    const promptSection = this.container.createEl('div', { cls: 'ai-console-prompt-section' });
     const promptInput = promptSection.createEl('textarea', {
       attr: { placeholder: 'Enter your prompt here...' },
       cls: 'ai-console-prompt'
     }) as HTMLTextAreaElement;
 
-    // Run Button
     const runBtn = promptSection.createEl('button', { text: 'Run', cls: 'ai-console-run-btn' });
 
-    // Output Section
-    const outputSection = this.container.createDiv({ cls: 'ai-console-output-section' });
+    const outputSection = this.container.createEl('div', { cls: 'ai-console-output-section' });
     outputSection.createEl('h4', { text: 'Output' });
-    const outputArea = outputSection.createDiv({ cls: 'ai-console-output' });
+    const outputArea = outputSection.createEl('div', { cls: 'ai-console-output' });
     const codeBlock = outputSection.createEl('pre', { cls: 'ai-console-code' });
 
-    // History Section
-    this.historyContainer = this.container.createDiv({ cls: 'ai-console-history' });
+    this.historyContainer = this.container.createEl('div', { cls: 'ai-console-history' });
     const historyHeader = this.historyContainer.createEl('h4', { text: 'Recent Prompts ▼' });
     this.historyList = this.historyContainer.createEl('ul', { cls: 'ai-console-history-list' });
 
-    // Toggle history visibility
     historyHeader.addEventListener('click', () => {
       this.isHistoryVisible = !this.isHistoryVisible;
       this.historyList.style.display = this.isHistoryVisible ? 'block' : 'none';
@@ -422,16 +410,25 @@ export class AiConsoleModal extends Modal {
         return;
       }
 
-      // Construct the LLM request
       const request: LLMRequest = { prompt, model, temperature, maxTokens };
-
-      // Directly use the selected provider's adapter to avoid fallback
       const adapter = (this.textGateway as any).adapters[provider];
       if (!adapter) {
         new Notice(`No adapter found for provider: ${provider}. Please check configuration.`);
         outputArea.setText(`Error: No adapter for ${provider}.`);
         console.error('[AiConsoleModal] No adapter found for provider:', provider);
         return;
+      }
+
+      // Check API key for providers requiring it
+      if (providerMetadata[provider]?.requiresApiKey) {
+        const apiKey = await this.secrets.getSecret(provider);
+        if (!apiKey) {
+          const errorMessage = `Error: No API key configured for ${provider}. Please set it in settings.`;
+          outputArea.setText(errorMessage);
+          new Notice(errorMessage);
+          console.error(`[${provider}] No API key found.`);
+          return;
+        }
       }
 
       try {
@@ -443,9 +440,18 @@ export class AiConsoleModal extends Modal {
           maxTokens,
         });
 
-        // Call the specific provider's adapter directly
-        const result = await adapter.generate(request);
-        const output = result.output ?? '[No result returned]';
+        const result: LLMResponse = await adapter.generate(request);
+        let output = '[No result returned]';
+        let tokensUsed = 0;
+
+        if (result && typeof result.output === 'string') {
+          output = result.output.trim();
+          tokensUsed = result.tokensUsed || 0;
+        } else {
+          console.warn('[AiConsoleModal] Unexpected response format from provider:', provider, result);
+          output = '[Unexpected response format]';
+        }
+
         outputArea.setText(output);
         codeBlock.setText(
           `await window.aiNNS.text.generate("${prompt.replace(/"/g, '\\"')}", { model: "${model}", temperature: ${temperature}, maxTokens: ${maxTokens} });`
@@ -454,16 +460,25 @@ export class AiConsoleModal extends Modal {
         this.renderHistory(this.historyList);
         console.log('[AiConsoleModal] Response received for', provider, ':', {
           output: output.length > 50 ? output.slice(0, 50) + '...' : output,
-          tokensUsed: result.tokensUsed,
+          tokensUsed,
         });
       } catch (error: any) {
         console.error('[AiConsoleModal] Generation error for', provider, ':', error);
-        outputArea.setText(`Error: ${error.message}`);
-        new Notice(`Failed to generate with ${provider}: ${error.message}`);
+        let errorMessage = `Error: ${error.message || 'Unknown error'}`;
+        if (provider === 'grok' && error.message.includes('401')) {
+          errorMessage = 'Error: Invalid or missing Grok API key. Please verify your xAI API key in settings at https://x.ai/api.';
+        } else if (provider === 'grok' && error.message.includes('net::ERR_')) {
+          errorMessage = 'Error: Network issue connecting to xAI API. Check your internet connection or firewall settings.';
+        } else if (provider === 'gemini' && error.message.includes('404')) {
+          errorMessage = `Error: Model "${model}" not found or incorrect endpoint for Gemini (tried https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent). Verify the model, API version, or region restrictions at https://ai.google.dev/docs.`;
+        } else if (provider === 'gemini' && error.message.includes('net::ERR_')) {
+          errorMessage = 'Error: Network issue connecting to Gemini API. Check your internet connection or firewall settings.';
+        }
+        outputArea.setText(errorMessage);
+        new Notice(`Failed to generate with ${provider}: ${error.message || 'Unknown error'}`);
       }
     };
 
-    // Inline styles
     const style = this.container.createEl('style');
     style.textContent = `
       .ai-console-container {
@@ -1422,70 +1437,50 @@ interface GeminiListModelsResponse {
  * @returns A promise that resolves to an array of model names (e.g., "models/gemini-pro").
  * @throws An error if the API request fails or returns an error status.
  */
+/**
+ * Fetches available models from the Gemini API.
+ * Ensures model names are correctly formatted for use in generateContent endpoint.
+ */
 export async function fetchGeminiModels(apiKey: string): Promise<string[]> {
-	// Construct the URL for the models.list endpoint, including the API key as a query parameter.
-	// Note: The v1beta version is used as specified in the documentation.
-	const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey.trim()}`;
-
 	try {
-		console.log('[Gemini] Fetching models from:', url); // Log the request URL (excluding key in production logs ideally)
-
-		// Make the GET request using Obsidian's requestUrl function.
-		// No request body is needed for this endpoint.
-		const response = await requestUrl({
-			url: url,
+	  // Try v1 first, then fallback to v1beta
+	  const apiVersions = ['v1', 'v1beta'];
+	  let lastError: Error | null = null;
+  
+	  for (const apiVersion of apiVersions) {
+		const url = `https://generativelanguage.googleapis.com/${apiVersion}/models?key=${apiKey}`;
+		console.log('[fetchGeminiModels] Fetching models with URL:', url);
+  
+		try {
+		  const resp = await requestUrl({
+			url,
 			method: 'GET',
-			headers: {
-				'Content-Type': 'application/json' // Standard header, though not strictly necessary for GET
-			}
-		});
-
-		// Check if the response status indicates an error (>= 400).
-		if (response.status >= 400) {
-			let errorMessage = `Gemini API error: ${response.status}`;
-			try {
-				// Attempt to parse the error message from the response body.
-				const errorBody = response.json?.error?.message || response.text || 'No additional details';
-				console.error('[Gemini] Error response body:', errorBody);
-				errorMessage += ` - ${errorBody}`;
-				if (response.status === 400) {
-					errorMessage += '. Check API key or request format.';
-				} else if (response.status === 401 || response.status === 403) {
-                    errorMessage += '. Check if the API key is valid and has permissions for the Generative Language API.';
-                } else if (response.status === 429) {
-                    errorMessage += '. Rate limit exceeded. Please try again later.';
-                }
-			} catch (parseError) {
-				// Fallback if parsing the error response fails.
-				errorMessage += ` - Failed to parse error details: ${response.text}`;
-			}
-			// Throw an error to be caught by the calling function (e.g., in settings tab).
-			throw new Error(errorMessage);
+		  });
+  
+		  if (resp.status !== 200) {
+			throw new Error(`Failed to fetch Gemini models: ${resp.status} - ${resp.text || 'No details'}`);
+		  }
+  
+		  const data = resp.json as { models: { name: string }[] };
+		  // Normalize model names by removing 'models/' prefix
+		  const models = data.models
+			.map(m => m.name.replace(/^models\//, ''))
+			.filter(m => m.startsWith('gemini')); // Only include Gemini models
+		  console.log('[fetchGeminiModels] Fetched models:', models);
+		  return models;
+		} catch (error) {
+		  console.error('[fetchGeminiModels] Error for API version', apiVersion, ':', error);
+		  lastError = error;
+		  continue;
 		}
-
-		// Parse the successful JSON response.
-		const data = response.json as GeminiListModelsResponse;
-
-		// Extract the 'name' field from each model object in the 'models' array.
-		// The 'name' field contains the full model identifier (e.g., "models/gemini-pro").
-		// Sort the names alphabetically for consistent display.
-		// Provide an empty array as a fallback if 'models' is missing or empty.
-		const modelNames = data.models?.map((m: GeminiModel) => m.name).sort() ?? [];
-
-		console.log('[Gemini] Successfully fetched models:', modelNames);
-		return modelNames;
-
-	} catch (err) {
-		// Log the error and re-throw it to ensure the calling code is aware of the failure.
-		console.error('[Gemini] Model fetch operation failed:', err);
-		// Add a more specific prefix to the re-thrown error if it's not already a Gemini API error.
-        if (err instanceof Error && !err.message.startsWith('Gemini API error')) {
-            throw new Error(`[Gemini] Network or parsing error: ${err.message}`);
-        }
-		throw err; // Re-throw the original error (could be the one thrown above or a network error)
+	  }
+  
+	  throw lastError || new Error('Failed to fetch models with all API versions');
+	} catch (error) {
+	  console.error('[fetchGeminiModels] Error:', error);
+	  return ['gemini-1.5-pro-latest', 'gemini-1.5-flash-latest']; // Fallback models
 	}
-}
-
+  }
 ===== src/settings/providers/grok.ts =====
 
 import { requestUrl } from 'obsidian';
@@ -1855,20 +1850,25 @@ import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
 import { fetchGrokModels } from '../../settings/providers/grok';
 
 /**
- * GrokAdapter implements the LLMAdapter interface for Groq's API.
- * It supports text generation using the /openai/v1/chat/completions endpoint.
+ * GrokAdapter implements the LLMAdapter interface for xAI's Grok API.
+ * It supports text generation using the xAI API endpoint.
  */
 export class GrokAdapter implements LLMAdapter {
   providerKey = 'grok';
-  private fallbackModel = 'llama3-8b-8192'; // Safe default from Groq API
+  private fallbackModel = 'grok-1'; // Safe default model for xAI Grok
 
   constructor(
     private apiKey: string,
     private defaultModel: string
   ) {
     console.log('[GrokAdapter] Initialized with default model:', defaultModel);
+    console.log('[GrokAdapter] API key provided:', this.apiKey ? '[REDACTED]' : 'None');
   }
 
+  /**
+   * Validates the provided model by checking against available xAI models.
+   * Returns the provided model if valid, else falls back to defaultModel or a known model.
+   */
   private async validateModel(model?: string): Promise<string> {
     console.log('[GrokAdapter] Validating model:', model || 'undefined');
     const candidateModel = model || this.defaultModel;
@@ -1914,6 +1914,9 @@ export class GrokAdapter implements LLMAdapter {
     }
   }
 
+  /**
+   * Generates text using xAI's chat completions endpoint.
+   */
   async generate(req: LLMRequest): Promise<LLMResponse> {
     const model = await this.validateModel(req.model);
     const body = {
@@ -1927,7 +1930,7 @@ export class GrokAdapter implements LLMAdapter {
     };
 
     console.log('[GrokAdapter] Sending request:', {
-      url: 'https://api.groq.com/openai/v1/chat/completions',
+      url: 'https://api.x.ai/v1/chat/completions',
       body: {
         ...body,
         messages: body.messages.map(msg => ({
@@ -1940,7 +1943,7 @@ export class GrokAdapter implements LLMAdapter {
 
     try {
       const resp = await requestUrl({
-        url: 'https://api.groq.com/openai/v1/chat/completions',
+        url: 'https://api.x.ai/v1/chat/completions',
         method: 'POST',
         headers: {
           Authorization: `Bearer ${this.apiKey.trim()}`,
@@ -1956,11 +1959,15 @@ export class GrokAdapter implements LLMAdapter {
           console.error('[GrokAdapter] Error response body:', errorBody);
           errorMessage += `: ${errorBody}`;
           if (resp.status === 401) {
-            errorMessage += '. Invalid API key. Verify your Groq API key in settings.';
+            errorMessage += '. Invalid API key. Verify your xAI API key in settings at https://x.ai/api.';
           } else if (resp.status === 400) {
             errorMessage += '. Check request parameters or model validity.';
           } else if (resp.status === 429) {
-            errorMessage += '. Rate limit exceeded. Try again later or check your Groq account.';
+            errorMessage += '. Rate limit exceeded. Try again later or check your xAI account at https://x.ai/api.';
+          } else if (resp.status === 403) {
+            errorMessage += '. Check your API key permissions or account status at https://x.ai/api.';
+          } else if (resp.status >= 500) {
+            errorMessage += '. Server error at xAI. Try again later or contact xAI support.';
           }
         } catch {
           errorMessage += ': Failed to parse error details';
@@ -1971,7 +1978,7 @@ export class GrokAdapter implements LLMAdapter {
       const data = resp.json as any;
       if (!data.choices || !Array.isArray(data.choices) || !data.choices[0]?.message?.content) {
         console.error('[GrokAdapter] Unexpected response format:', data);
-        throw new Error('Unexpected Grok API response format');
+        throw new Error('Unexpected xAI API response format');
       }
 
       const output = data.choices[0].message.content.trim();
@@ -2332,19 +2339,25 @@ import { fetchGeminiModels } from '../../settings/providers/gemini';
 
 /**
  * GeminiAdapter implements the LLMAdapter interface for Google's Gemini API.
- * It supports text generation using the /v1beta/models endpoint.
+ * It supports text generation using the Gemini API endpoint.
  */
 export class GeminiAdapter implements LLMAdapter {
   providerKey = 'gemini';
-  private fallbackModel = 'gemini-2.5-pro'; // Safe default
+  private fallbackModel = 'gemini-1.5-pro-latest'; // Updated to latest model
+  private apiVersions = ['v1', 'v1beta']; // Try both stable and beta
 
   constructor(
     private apiKey: string,
     private defaultModel: string
   ) {
     console.log('[GeminiAdapter] Initialized with default model:', defaultModel);
+    console.log('[GeminiAdapter] API key provided:', this.apiKey ? '[REDACTED]' : 'None');
   }
 
+  /**
+   * Validates the provided model by checking against available Gemini models.
+   * Returns the provided model if valid, else falls back to defaultModel or a known model.
+   */
   private async validateModel(model?: string): Promise<string> {
     console.log('[GeminiAdapter] Validating model:', model || 'undefined');
     const candidateModel = model || this.defaultModel;
@@ -2353,12 +2366,14 @@ export class GeminiAdapter implements LLMAdapter {
       const availableModels = await fetchGeminiModels(this.apiKey);
       console.log('[GeminiAdapter] Available models:', availableModels);
 
-      if (availableModels.includes(candidateModel)) {
+      // Normalize model names by removing 'models/' prefix
+      const normalizedModels = availableModels.map(m => m.replace(/^models\//, ''));
+      if (normalizedModels.includes(candidateModel)) {
         console.log('[GeminiAdapter] Model validated:', candidateModel);
         return candidateModel;
       }
 
-      if (availableModels.includes(this.defaultModel)) {
+      if (normalizedModels.includes(this.defaultModel)) {
         console.warn(
           '[GeminiAdapter] Invalid model provided:',
           candidateModel,
@@ -2368,7 +2383,7 @@ export class GeminiAdapter implements LLMAdapter {
         return this.defaultModel;
       }
 
-      if (availableModels.includes(this.fallbackModel)) {
+      if (normalizedModels.includes(this.fallbackModel)) {
         console.warn(
           '[GeminiAdapter] Both provided model',
           candidateModel,
@@ -2380,7 +2395,7 @@ export class GeminiAdapter implements LLMAdapter {
         return this.fallbackModel;
       }
 
-      console.error('[GeminiAdapter] No valid models available:', availableModels);
+      console.error('[GeminiAdapter] No valid models available:', normalizedModels);
       throw new Error('No valid Gemini models available. Check API key or API status.');
     } catch (error) {
       console.error('[GeminiAdapter] Error fetching available models:', error);
@@ -2390,14 +2405,17 @@ export class GeminiAdapter implements LLMAdapter {
     }
   }
 
+  /**
+   * Generates text using Google's Gemini API.
+   */
   async generate(req: LLMRequest): Promise<LLMResponse> {
     const model = await this.validateModel(req.model);
     const body = {
       contents: [
         ...(req.systemPrompt
-          ? [{ parts: [{ text: req.systemPrompt }] }]
+          ? [{ parts: [{ text: req.systemPrompt }], role: 'system' }]
           : []),
-        { parts: [{ text: req.prompt }] },
+        { parts: [{ text: req.prompt }], role: 'user' },
       ],
       generationConfig: {
         temperature: req.temperature ?? 0.7,
@@ -2405,70 +2423,107 @@ export class GeminiAdapter implements LLMAdapter {
       },
     };
 
-    console.log('[GeminiAdapter] Sending request:', {
-      url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-      body: {
-        ...body,
-        contents: body.contents.map((c: any) => ({
-          parts: c.parts.map((p: any) => ({
-            text: p.text.length > 50 ? p.text.slice(0, 50) + '...' : p.text,
+    let lastError: Error | null = null;
+
+    for (const apiVersion of this.apiVersions) {
+      const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent?key=${this.apiKey.trim()}`;
+
+      console.log('[GeminiAdapter] Sending request:', {
+        url,
+        apiVersion,
+        model,
+        body: {
+          contents: body.contents.map(c => ({
+            ...c,
+            parts: c.parts.map(p => ({
+              text: p.text.length > 50 ? p.text.slice(0, 50) + '...' : p.text,
+            })),
           })),
-        })),
-      },
-      headers: { 'Content-Type': 'application/json' },
-    });
-
-    try {
-      const resp = await requestUrl({
-        url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
+          generationConfig: body.generationConfig,
         },
-        body: JSON.stringify({
-          ...body,
-          key: this.apiKey.trim(),
-        }),
+        headers: { 'Content-Type': 'application/json' },
       });
 
-      if (resp.status >= 400) {
-        let errorMessage = `Gemini error ${resp.status}`;
-        try {
-          const errorBody = resp.json?.error?.message || resp.text || 'No additional details';
-          console.error('[GeminiAdapter] Error response body:', errorBody);
-          errorMessage += `: ${errorBody}`;
-          if (resp.status === 401 || resp.status === 403) {
-            errorMessage += '. Invalid API key. Verify your Gemini API key in settings.';
-          } else if (resp.status === 429) {
-            errorMessage += '. Rate limit exceeded. Try again later or check your Google AI Studio account.';
+      try {
+        const resp = await requestUrl({
+          url,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        });
+
+        if (resp.status >= 400) {
+          let errorMessage = `Gemini error ${resp.status}`;
+          let errorDetails = '';
+          try {
+            const errorBody = resp.json?.error?.message || resp.text || 'No additional details';
+            console.error('[GeminiAdapter] Error response body:', errorBody);
+            errorDetails = errorBody;
+            errorMessage += `: ${errorBody}`;
+            if (resp.status === 401) {
+              errorMessage += '. Invalid API key. Verify your Gemini API key in settings at https://aistudio.google.com/app/apikey.';
+            } else if (resp.status === 404) {
+              errorMessage += `. Model "${model}" not found or endpoint incorrect for API version ${apiVersion} (tried ${url}). Check available models, API version, or region restrictions at https://ai.google.dev/docs.`;
+            } else if (resp.status === 400) {
+              errorMessage += '. Invalid request parameters. Check prompt or model configuration.';
+            } else if (resp.status === 429) {
+              errorMessage += '. Rate limit exceeded. Try again later or check your Gemini API quota at https://aistudio.google.com/app/apikey.';
+            } else if (resp.status === 403) {
+              errorMessage += '. Check your API key permissions or account status at https://aistudio.google.com/app/apikey.';
+            } else if (resp.status >= 500) {
+              errorMessage += '. Server error at Google. Try again later or contact Google AI support.';
+            }
+          } catch {
+            errorMessage += ': Failed to parse error details';
           }
-        } catch {
-          errorMessage += ': Failed to parse error details';
+          lastError = new Error(errorMessage);
+          continue;
         }
-        throw new Error(errorMessage);
+
+        const data = resp.json as any;
+        if (
+          !data.candidates ||
+          !Array.isArray(data.candidates) ||
+          !data.candidates[0]?.content?.parts?.[0]?.text
+        ) {
+          console.error('[GeminiAdapter] Unexpected response format:', data);
+          throw new Error('Unexpected Gemini API response format');
+        }
+
+        const output = data.candidates[0].content.parts[0].text.trim();
+        const tokensUsed = data.usageMetadata?.totalTokenCount || 0;
+        console.log('[GeminiAdapter] Response received:', {
+          output: output.length > 50 ? output.slice(0, 50) + '...' : output,
+          tokensUsed,
+          model,
+          apiVersion,
+        });
+
+        return {
+          output,
+          tokensUsed,
+        };
+      } catch (error) {
+        console.error('[GeminiAdapter] Generation error for API version', apiVersion, ':', {
+          error: error.message,
+          url,
+          modelUsed: model,
+          apiKeyPresent: !!this.apiKey,
+          requestBody: body.contents.map(c => ({
+            ...c,
+            parts: c.parts.map(p => ({
+              text: p.text.length > 50 ? p.text.slice(0, 50) + '...' : p.text,
+            })),
+          })),
+        });
+        lastError = error;
+        continue;
       }
-
-      const data = resp.json as any;
-      if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
-        console.error('[GeminiAdapter] Unexpected response format:', data);
-        throw new Error('Unexpected Gemini API response format');
-      }
-
-      const output = data.candidates[0].content.parts[0].text.trim();
-      const tokensUsed = data.usageMetadata?.totalTokenCount || 0;
-      console.log('[GeminiAdapter] Response received:', {
-        output: output.length > 50 ? output.slice(0, 50) + '...' : output,
-        tokensUsed,
-      });
-
-      return {
-        output,
-        tokensUsed,
-      };
-    } catch (error) {
-      console.error('[GeminiAdapter] Generation error:', error);
-      throw error;
     }
+
+    throw lastError || new Error('All API versions failed to generate content');
   }
 }
 ===== src/adapters/text/AnthropicAdapter.ts =====

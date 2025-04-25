@@ -7,6 +7,7 @@ import { AnthropicAdapter } from '../adapters/text/AnthropicAdapter';
 import { GrokAdapter } from '../adapters/text/GrokAdapter';
 import { OpenRouterAdapter } from '../adapters/text/OpenRouterAdapter';
 import { GeminiAdapter } from '../adapters/text/GeminiAdapter';
+import { GroqAdapter } from '../adapters/text/GroqAdapter'; // Added import for GroqAdapter
 
 export class TextGateway {
   private adapters: Record<string, LLMAdapter> = {};
@@ -56,6 +57,9 @@ export class TextGateway {
           break;
         case 'gemini':
           adapter = new GeminiAdapter(apiKey!, model);
+          break;
+        case 'groq': // Added case for groq provider
+          adapter = new GroqAdapter(apiKey!, model);
           break;
         default:
           console.warn(`[TextGateway] Unsupported provider: ${key}`);
