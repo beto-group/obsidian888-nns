@@ -13,14 +13,16 @@ import {
     SampleSettingTab
 } from './src/settings/settings';
 
-import { SecretsManager } from './src/utils/secrets'; // Correct path
+import { SecretsManager } from './src/utils/secrets';
+import { AiConsoleModal } from './src/ui/AiConsoleModal';
+import { registerAiNNS, unregisterAiNNS } from './src/api/aiNNS';
 
 /**
  * Main Plugin Class
  */
 export default class MyPlugin extends Plugin {
     settings: MyPluginSettings;
-    secrets: SecretsManager; // Instance of SecretsManager
+    secrets: SecretsManager;
 
     /**
      * Plugin entry point
@@ -30,38 +32,47 @@ export default class MyPlugin extends Plugin {
 
         // Initialize SecretsManager and wait for it to load secrets from file
         this.secrets = new SecretsManager(this.app);
-        await this.secrets.initialize(); // <-- Important: Wait for secrets to load
+        await this.secrets.initialize();
 
-        // Log stored secrets for debugging (now safe after initialize)
+        // Log stored secrets for debugging
         try {
-             const storedSecrets = await this.secrets.listSecrets();
-             console.log('[MyPlugin] Stored secret keys on load:', storedSecrets);
+            const storedSecrets = await this.secrets.listSecrets();
+            console.log('[MyPlugin] Stored secret keys on load:', storedSecrets);
         } catch (error) {
             console.error("[MyPlugin] Error listing secrets on load:", error);
         }
 
-
         // Load plugin settings
         await this.loadSettings();
 
-        // Example usage: Try to get a secret (safe after initialize)
+        // Example usage: Try to get a secret
         try {
             const openai = await this.secrets.getSecret("openai");
             if (openai) {
-                 console.log("[MyPlugin] Found OpenAI Secret on load (length):", openai.length); // Avoid logging the actual key
-            } else {
-                // console.log("[MyPlugin] OpenAI Secret not found on load."); // Reduce noise
+                console.log("[MyPlugin] Found OpenAI Secret on load (length):", openai.length);
             }
         } catch (error) {
-             console.error("[MyPlugin] Error getting OpenAI secret on load:", error);
+            console.error("[MyPlugin] Error getting OpenAI secret on load:", error);
         }
 
+        // Register aiNNS API on global scope
+        try {
+            await registerAiNNS(this.app, this.secrets, this.settings);
+            console.log('[MyPlugin] aiNNS API registered successfully.');
+        } catch (error) {
+            console.error('[MyPlugin] Error registering aiNNS API:', error);
+        }
 
-        // --- Rest of your onload logic ---
+        // --- UI and Commands ---
 
-        // Add ribbon icon
-        const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-            new Notice('This is a notice!');
+        // Add ribbon icon (opens AI Console)
+        const ribbonIconEl = this.addRibbonIcon('rocket', 'Open AI Console', (evt: MouseEvent) => {
+            try {
+                new AiConsoleModal(this.app, this.settings, this.secrets).open();
+            } catch (error) {
+                console.error('[MyPlugin] Error opening AiConsoleModal from ribbon:', error);
+                new Notice('Failed to open AI Console Modal.');
+            }
         });
         ribbonIconEl.addClass('my-plugin-ribbon-class');
 
@@ -100,21 +111,35 @@ export default class MyPlugin extends Plugin {
                     }
                     return true;
                 }
-                return false; // Added return false for clarity
+                return false;
             }
         });
 
-        // Add settings tab - Pass the initialized SecretsManager instance
+        // Add command to open AiConsoleModal
+        this.addCommand({
+            id: 'open-ai-console-modal',
+            name: 'Open AI Console Modal',
+            callback: () => {
+                try {
+                    new AiConsoleModal(this.app, this.settings, this.secrets).open();
+                } catch (error) {
+                    console.error('[MyPlugin] Error opening AiConsoleModal:', error);
+                    new Notice('Failed to open AI Console Modal.');
+                }
+            }
+        });
+
+        // Add settings tab
         this.addSettingTab(new SampleSettingTab(this.app, this, this.secrets));
 
         // Register global DOM event
         this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-            // console.log('[MyPlugin] DOM click', evt); // Reduced logging verbosity
+            // console.log('[MyPlugin] DOM click', evt);
         });
 
         // Register interval task
         this.registerInterval(window.setInterval(() => {
-            // console.log('[MyPlugin] Interval running'); // Reduced logging verbosity
+            // console.log('[MyPlugin] Interval running');
         }, 5 * 60 * 1000));
 
         console.log('[MyPlugin] Plugin loaded successfully.');
@@ -125,6 +150,8 @@ export default class MyPlugin extends Plugin {
      */
     onunload() {
         console.log('[MyPlugin] Unloaded');
+        // Unregister aiNNS API to clean up global scope
+        unregisterAiNNS();
     }
 
     /**

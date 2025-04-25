@@ -16,14 +16,16 @@ import {
     SampleSettingTab
 } from './src/settings/settings';
 
-import { SecretsManager } from './utils/secrets'; // Correct path
+import { SecretsManager } from './src/utils/secrets';
+import { AiConsoleModal } from './src/ui/AiConsoleModal';
+import { registerAiNNS, unregisterAiNNS } from './src/api/aiNNS';
 
 /**
  * Main Plugin Class
  */
 export default class MyPlugin extends Plugin {
     settings: MyPluginSettings;
-    secrets: SecretsManager; // Instance of SecretsManager
+    secrets: SecretsManager;
 
     /**
      * Plugin entry point
@@ -33,38 +35,47 @@ export default class MyPlugin extends Plugin {
 
         // Initialize SecretsManager and wait for it to load secrets from file
         this.secrets = new SecretsManager(this.app);
-        await this.secrets.initialize(); // <-- Important: Wait for secrets to load
+        await this.secrets.initialize();
 
-        // Log stored secrets for debugging (now safe after initialize)
+        // Log stored secrets for debugging
         try {
-             const storedSecrets = await this.secrets.listSecrets();
-             console.log('[MyPlugin] Stored secret keys on load:', storedSecrets);
+            const storedSecrets = await this.secrets.listSecrets();
+            console.log('[MyPlugin] Stored secret keys on load:', storedSecrets);
         } catch (error) {
             console.error("[MyPlugin] Error listing secrets on load:", error);
         }
 
-
         // Load plugin settings
         await this.loadSettings();
 
-        // Example usage: Try to get a secret (safe after initialize)
+        // Example usage: Try to get a secret
         try {
             const openai = await this.secrets.getSecret("openai");
             if (openai) {
-                 console.log("[MyPlugin] Found OpenAI Secret on load (length):", openai.length); // Avoid logging the actual key
-            } else {
-                // console.log("[MyPlugin] OpenAI Secret not found on load."); // Reduce noise
+                console.log("[MyPlugin] Found OpenAI Secret on load (length):", openai.length);
             }
         } catch (error) {
-             console.error("[MyPlugin] Error getting OpenAI secret on load:", error);
+            console.error("[MyPlugin] Error getting OpenAI secret on load:", error);
         }
 
+        // Register aiNNS API on global scope
+        try {
+            await registerAiNNS(this.app, this.secrets, this.settings);
+            console.log('[MyPlugin] aiNNS API registered successfully.');
+        } catch (error) {
+            console.error('[MyPlugin] Error registering aiNNS API:', error);
+        }
 
-        // --- Rest of your onload logic ---
+        // --- UI and Commands ---
 
-        // Add ribbon icon
-        const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-            new Notice('This is a notice!');
+        // Add ribbon icon (opens AI Console)
+        const ribbonIconEl = this.addRibbonIcon('rocket', 'Open AI Console', (evt: MouseEvent) => {
+            try {
+                new AiConsoleModal(this.app, this.settings, this.secrets).open();
+            } catch (error) {
+                console.error('[MyPlugin] Error opening AiConsoleModal from ribbon:', error);
+                new Notice('Failed to open AI Console Modal.');
+            }
         });
         ribbonIconEl.addClass('my-plugin-ribbon-class');
 
@@ -103,21 +114,35 @@ export default class MyPlugin extends Plugin {
                     }
                     return true;
                 }
-                return false; // Added return false for clarity
+                return false;
             }
         });
 
-        // Add settings tab - Pass the initialized SecretsManager instance
+        // Add command to open AiConsoleModal
+        this.addCommand({
+            id: 'open-ai-console-modal',
+            name: 'Open AI Console Modal',
+            callback: () => {
+                try {
+                    new AiConsoleModal(this.app, this.settings, this.secrets).open();
+                } catch (error) {
+                    console.error('[MyPlugin] Error opening AiConsoleModal:', error);
+                    new Notice('Failed to open AI Console Modal.');
+                }
+            }
+        });
+
+        // Add settings tab
         this.addSettingTab(new SampleSettingTab(this.app, this, this.secrets));
 
         // Register global DOM event
         this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-            // console.log('[MyPlugin] DOM click', evt); // Reduced logging verbosity
+            // console.log('[MyPlugin] DOM click', evt);
         });
 
         // Register interval task
         this.registerInterval(window.setInterval(() => {
-            // console.log('[MyPlugin] Interval running'); // Reduced logging verbosity
+            // console.log('[MyPlugin] Interval running');
         }, 5 * 60 * 1000));
 
         console.log('[MyPlugin] Plugin loaded successfully.');
@@ -128,6 +153,8 @@ export default class MyPlugin extends Plugin {
      */
     onunload() {
         console.log('[MyPlugin] Unloaded');
+        // Unregister aiNNS API to clean up global scope
+        unregisterAiNNS();
     }
 
     /**
@@ -163,18 +190,491 @@ class SampleModal extends Modal {
         contentEl.empty();
     }
 }
+
 ===== src/types.ts =====
 
 
-===== src/ui/PromptModal.ts =====
+===== src/ui/AiConsoleModal.ts =====
 
+import { App, Modal, Setting, Notice, SliderComponent, TextComponent } from 'obsidian';
+import type { MyPluginSettings } from '../settings/settings';
+import type { SecretsManager } from '../utils/secrets';
+import { providerMetadata, providerFetchers } from '../settings/providers/index';
+import { TextGateway } from '../gateways/TextGateway';
+import type { LLMRequest } from '../core/Adapter';
 
+interface PromptHistoryEntry {
+  provider: string;
+  model: string;
+  prompt: string;
+  output: string;
+  timestamp: string;
+}
+
+export class AiConsoleModal extends Modal {
+  private settings: MyPluginSettings;
+  private secrets: SecretsManager;
+  private textGateway?: TextGateway; // Make optional to handle failure gracefully
+  private container!: HTMLElement;
+  private providerSelectEl!: HTMLSelectElement;
+  private modelSelectEl!: HTMLSelectElement;
+  private promptHistory: PromptHistoryEntry[] = [];
+  private maxHistoryEntries = 10;
+  private historyContainer!: HTMLElement;
+  private historyList!: HTMLElement;
+  private isHistoryVisible: boolean = true;
+
+  constructor(app: App, settings: MyPluginSettings, secrets: SecretsManager) {
+    super(app);
+    this.settings = settings;
+    this.secrets = secrets;
+  }
+
+  async onOpen() {
+    console.log('[AiConsoleModal] Opening modal...');
+    this.titleEl.setText('AI Console Playground');
+    this.contentEl.empty();
+    this.container = this.contentEl.createDiv({ cls: 'ai-console-container' });
+
+    // Initialize TextGateway with better error handling
+    try {
+      this.textGateway = await TextGateway.create(this.secrets, this.settings);
+      console.log('[AiConsoleModal] TextGateway initialized successfully.');
+    } catch (error: any) {
+      console.error('[AiConsoleModal] Failed to initialize TextGateway:', error);
+      new Notice('Failed to initialize AI Console. Some features may be limited.');
+      this.container.createEl('p', { text: 'Error initializing AI Console. You can still enter prompts below, but provider/model selection may not work.' });
+    }
+
+    // Gather available providers (with fallback if TextGateway fails)
+    const providers: string[] = [];
+    try {
+      for (const key of Object.keys(this.settings.providers)) {
+        const meta = providerMetadata[key];
+        if (meta.requiresApiKey) {
+          const apiKey = await this.secrets.getSecret(key);
+          if (apiKey) providers.push(key);
+        } else {
+          providers.push(key);
+        }
+      }
+      console.log('[AiConsoleModal] Providers loaded:', providers);
+    } catch (error) {
+      console.error('[AiConsoleModal] Error gathering providers:', error);
+      new Notice('Failed to load providers. Using fallback options.');
+    }
+
+    // Controls Section
+    const controlsSection = this.container.createDiv({ cls: 'ai-console-controls' });
+    controlsSection.createEl('h3', { text: 'Settings' });
+
+    // Provider dropdown
+    try {
+      new Setting(controlsSection)
+        .setName('Provider')
+        .setDesc('Select the AI provider to use.')
+        .addDropdown(dropdown => {
+          this.providerSelectEl = dropdown.selectEl;
+          if (providers.length === 0) {
+            dropdown.addOption('', 'No providers available');
+          } else {
+            providers.forEach(p => dropdown.addOption(p, p));
+            const initial =
+              this.settings.defaultProvider && providers.includes(this.settings.defaultProvider)
+                ? this.settings.defaultProvider
+                : providers[0];
+            dropdown.setValue(initial);
+            dropdown.onChange(async value => {
+              console.log('[AiConsoleModal] Provider changed to:', value);
+              await this.updateModelDropdown(value);
+            });
+          }
+        });
+    } catch (error) {
+      console.error('[AiConsoleModal] Error creating provider dropdown:', error);
+      controlsSection.createEl('p', { text: 'Error loading provider dropdown.' });
+    }
+
+    // Model dropdown
+    try {
+      new Setting(controlsSection)
+        .setName('Model')
+        .setDesc('Select the model for the selected provider.')
+        .addDropdown(dropdown => {
+          this.modelSelectEl = dropdown.selectEl;
+          dropdown.setDisabled(providers.length === 0);
+        });
+    } catch (error) {
+      console.error('[AiConsoleModal] Error creating model dropdown:', error);
+      controlsSection.createEl('p', { text: 'Error loading model dropdown.' });
+    }
+
+    // Populate models for initial provider
+    if (providers.length > 0) {
+      try {
+        await this.updateModelDropdown(this.providerSelectEl.value);
+      } catch (error) {
+        console.error('[AiConsoleModal] Error populating models:', error);
+      }
+    }
+
+    // Parameters section
+    const paramsContainer = controlsSection.createDiv({ cls: 'ai-console-params' });
+    paramsContainer.createEl('h4', { text: 'Parameters' });
+
+    let tempSetting: Setting, maxTokensSetting: Setting;
+    try {
+      tempSetting = new Setting(paramsContainer)
+        .setName('Temperature')
+        .setDesc('Controls randomness (0.0 to 1.0).')
+        .addSlider(slider => slider.setLimits(0, 1, 0.1).setValue(0.7).setDynamicTooltip());
+    } catch (error) {
+      console.error('[AiConsoleModal] Error creating temperature slider:', error);
+      paramsContainer.createEl('p', { text: 'Error loading temperature slider.' });
+    }
+
+    try {
+      maxTokensSetting = new Setting(paramsContainer)
+        .setName('Max Tokens')
+        .setDesc('Maximum number of tokens to generate.')
+        .addText(text =>
+          text
+            .setPlaceholder('1000')
+            .setValue('1000')
+            .onChange(value => {
+              if (isNaN(parseInt(value)) && value !== '') {
+                new Notice('Max Tokens must be a number.');
+                text.setValue('1000');
+              }
+            })
+        );
+    } catch (error) {
+      console.error('[AiConsoleModal] Error creating max tokens input:', error);
+      paramsContainer.createEl('p', { text: 'Error loading max tokens input.' });
+    }
+
+    // Prompt Input Section
+    const promptSection = this.container.createDiv({ cls: 'ai-console-prompt-section' });
+    const promptInput = promptSection.createEl('textarea', {
+      attr: { placeholder: 'Enter your prompt here...' },
+      cls: 'ai-console-prompt'
+    }) as HTMLTextAreaElement;
+
+    // Run Button
+    const runBtn = promptSection.createEl('button', { text: 'Run', cls: 'ai-console-run-btn' });
+
+    // Output Section
+    const outputSection = this.container.createDiv({ cls: 'ai-console-output-section' });
+    outputSection.createEl('h4', { text: 'Output' });
+    const outputArea = outputSection.createDiv({ cls: 'ai-console-output' });
+    const codeBlock = outputSection.createEl('pre', { cls: 'ai-console-code' });
+
+    // History Section
+    this.historyContainer = this.container.createDiv({ cls: 'ai-console-history' });
+    const historyHeader = this.historyContainer.createEl('h4', { text: 'Recent Prompts ▼' });
+    this.historyList = this.historyContainer.createEl('ul', { cls: 'ai-console-history-list' });
+
+    // Toggle history visibility
+    historyHeader.addEventListener('click', () => {
+      this.isHistoryVisible = !this.isHistoryVisible;
+      this.historyList.style.display = this.isHistoryVisible ? 'block' : 'none';
+      historyHeader.textContent = `Recent Prompts ${this.isHistoryVisible ? '▼' : '▲'}`;
+    });
+
+    runBtn.onclick = async () => {
+      console.log('[AiConsoleModal] Run button clicked.');
+      const provider = this.providerSelectEl.value;
+      const model =
+        this.modelSelectEl.value || this.settings.providers[provider]?.model || '';
+      const prompt = promptInput.value.trim();
+      let temperature = 0.7;
+      let maxTokens = 1000;
+
+      try {
+        temperature = parseFloat((tempSetting!.components[0] as SliderComponent).getValue().toString()) || 0.7;
+      } catch (error) {
+        console.error('[AiConsoleModal] Error getting temperature:', error);
+        new Notice('Failed to get temperature value. Using default (0.7).');
+      }
+
+      try {
+        maxTokens = parseInt((maxTokensSetting!.components[0] as TextComponent).getValue()) || 1000;
+      } catch (error) {
+        console.error('[AiConsoleModal] Error getting max tokens:', error);
+        new Notice('Failed to get max tokens value. Using default (1000).');
+      }
+
+      outputArea.empty();
+      codeBlock.empty();
+
+      if (!prompt) {
+        new Notice('Please enter a prompt.');
+        return;
+      }
+      if (!provider) {
+        new Notice('Please select a provider.');
+        return;
+      }
+
+      if (!this.textGateway) {
+        new Notice('TextGateway not initialized. Cannot generate response.');
+        outputArea.setText('Error: TextGateway not initialized.');
+        return;
+      }
+
+      // Construct the LLM request
+      const request: LLMRequest = { prompt, model, temperature, maxTokens };
+
+      // Directly use the selected provider's adapter to avoid fallback
+      const adapter = (this.textGateway as any).adapters[provider];
+      if (!adapter) {
+        new Notice(`No adapter found for provider: ${provider}. Please check configuration.`);
+        outputArea.setText(`Error: No adapter for ${provider}.`);
+        console.error('[AiConsoleModal] No adapter found for provider:', provider);
+        return;
+      }
+
+      try {
+        outputArea.setText('Generating...');
+        console.log('[AiConsoleModal] Testing provider:', provider, 'with request:', {
+          prompt: prompt.length > 50 ? prompt.slice(0, 50) + '...' : prompt,
+          model,
+          temperature,
+          maxTokens,
+        });
+
+        // Call the specific provider's adapter directly
+        const result = await adapter.generate(request);
+        const output = result.output ?? '[No result returned]';
+        outputArea.setText(output);
+        codeBlock.setText(
+          `await window.aiNNS.text.generate("${prompt.replace(/"/g, '\\"')}", { model: "${model}", temperature: ${temperature}, maxTokens: ${maxTokens} });`
+        );
+        this.addToHistory({ provider, model, prompt, output, timestamp: new Date().toLocaleString() });
+        this.renderHistory(this.historyList);
+        console.log('[AiConsoleModal] Response received for', provider, ':', {
+          output: output.length > 50 ? output.slice(0, 50) + '...' : output,
+          tokensUsed: result.tokensUsed,
+        });
+      } catch (error: any) {
+        console.error('[AiConsoleModal] Generation error for', provider, ':', error);
+        outputArea.setText(`Error: ${error.message}`);
+        new Notice(`Failed to generate with ${provider}: ${error.message}`);
+      }
+    };
+
+    // Inline styles
+    const style = this.container.createEl('style');
+    style.textContent = `
+      .ai-console-container {
+        padding: 20px;
+        max-width: 900px;
+        margin: auto;
+        background: var(--background-primary);
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      }
+      .ai-console-controls {
+        margin-bottom: 20px;
+        padding: 15px;
+        background: var(--background-secondary);
+        border-radius: 6px;
+        border: 1px solid var(--background-modifier-border);
+      }
+      .ai-console-controls h3 {
+        margin: 0 0 15px 0;
+        font-size: 18px;
+        color: var(--text-normal);
+      }
+      .ai-console-params {
+        margin-top: 15px;
+        padding-top: 10px;
+        border-top: 1px solid var(--background-modifier-border);
+      }
+      .ai-console-params h4 {
+        margin: 0 0 10px 0;
+        font-size: 16px;
+        color: var(--text-normal);
+      }
+      .ai-console-prompt-section {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 20px;
+        align-items: flex-end;
+      }
+      .ai-console-prompt {
+        flex: 1;
+        width: 100%;
+        height: 120px;
+        padding: 10px;
+        border: 1px solid var(--background-modifier-border);
+        border-radius: 6px;
+        background: var(--background-primary-alt);
+        color: var(--text-normal);
+        font-size: 14px;
+        resize: vertical;
+        transition: border-color 0.2s ease;
+      }
+      .ai-console-prompt:focus {
+        border-color: var(--interactive-accent);
+        outline: none;
+      }
+      .ai-console-run-btn {
+        padding: 10px 20px;
+        background: var(--interactive-accent);
+        color: white;
+        border: none;
+        border-radius: 6px;
+        font-size: 14px;
+        cursor: pointer;
+        transition: background 0.2s ease;
+      }
+      .ai-console-run-btn:hover {
+        background: var(--interactive-accent-hover);
+      }
+      .ai-console-output-section {
+        margin-bottom: 20px;
+      }
+      .ai-console-output-section h4 {
+        margin: 0 0 10px 0;
+        font-size: 16px;
+        color: var(--text-normal);
+      }
+      .ai-console-output {
+        padding: 15px;
+        background: var(--background-secondary);
+        border-radius: 6px;
+        min-height: 120px;
+        white-space: pre-wrap;
+        border: 1px solid var(--background-modifier-border);
+        font-size: 14px;
+        color: var(--text-normal);
+      }
+      .ai-console-code {
+        margin-top: 10px;
+        padding: 15px;
+        background: var(--code-block-background);
+        border-radius: 6px;
+        overflow-x: auto;
+        font-size: 13px;
+        color: var(--text-muted);
+        border: 1px solid var(--background-modifier-border);
+      }
+      .ai-console-history {
+        margin-top: 20px;
+        padding: 15px;
+        background: var(--background-secondary);
+        border-radius: 6px;
+        border: 1px solid var(--background-modifier-border);
+      }
+      .ai-console-history h4 {
+        margin: 0 0 10px 0;
+        font-size: 16px;
+        color: var(--text-normal);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .ai-console-history-list {
+        list-style: none;
+        padding: 0;
+        max-height: 200px;
+        overflow-y: auto;
+      }
+      .ai-console-history-list li {
+        padding: 10px;
+        border-bottom: 1px solid var(--background-modifier-border);
+        cursor: pointer;
+        font-size: 14px;
+        color: var(--text-normal);
+        transition: background 0.2s ease;
+      }
+      .ai-console-history-list li:hover {
+        background: var(--background-modifier-hover);
+      }
+      .ai-console-history-list li:last-child {
+        border-bottom: none;
+      }
+      .ai-console-history-list strong {
+        color: var(--text-accent);
+      }
+      .ai-console-history-list span {
+        color: var(--text-muted);
+      }
+    `;
+    console.log('[AiConsoleModal] Modal UI fully rendered.');
+  }
+
+  private async updateModelDropdown(provider: string) {
+    console.log('[AiConsoleModal] Updating model dropdown for provider:', provider);
+    this.modelSelectEl.innerHTML = '';
+    this.modelSelectEl.disabled = true;
+
+    if (!provider || !this.settings.providers[provider]) {
+      this.modelSelectEl.add(new Option('No models available', ''));
+      return;
+    }
+
+    try {
+      let models: string[] = [];
+      if (providerMetadata[provider].requiresApiKey) {
+        const apiKey = await this.secrets.getSecret(provider);
+        if (apiKey) {
+          models = await providerFetchers[provider](apiKey, this.app);
+        }
+      } else {
+        models = await providerFetchers[provider]('', this.app);
+      }
+
+      if (!models.length) {
+        this.modelSelectEl.add(new Option('No models available', ''));
+        return;
+      }
+
+      models.forEach(m => this.modelSelectEl.add(new Option(m, m)));
+      const current = this.settings.providers[provider].model;
+      this.modelSelectEl.value = models.includes(current) ? current : models[0];
+      this.modelSelectEl.disabled = false;
+      console.log('[AiConsoleModal] Models loaded:', models);
+    } catch (error) {
+      console.error('[AiConsoleModal] Error fetching models:', error);
+      this.modelSelectEl.add(new Option('Error fetching models', ''));
+    }
+  }
+
+  private addToHistory(entry: PromptHistoryEntry) {
+    this.promptHistory.unshift(entry);
+    if (this.promptHistory.length > this.maxHistoryEntries) this.promptHistory.pop();
+  }
+
+  private renderHistory(list: HTMLElement) {
+    list.empty();
+    this.promptHistory.forEach(entry => {
+      const li = list.createEl('li');
+      li.createEl('strong', { text: `[${entry.timestamp}] ${entry.provider} (${entry.model})` });
+      li.createEl('br');
+      li.createEl('span', { text: `Prompt: ${entry.prompt}${entry.prompt.length>50?'...':''}` });
+      li.addEventListener('click', () => {
+        this.providerSelectEl.value = entry.provider;
+        this.updateModelDropdown(entry.provider).then(() => {
+          this.modelSelectEl.value = entry.model;
+        });
+      });
+    });
+  }
+
+  onClose() {
+    this.container.empty();
+    console.log('[AiConsoleModal] Modal closed.');
+  }
+}
 ===== src/settings/settings.ts =====
 
 import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
 import type MyPlugin from '../../main';
 import { providerFetchers, providerMetadata } from './providers/index';
-import { SecretsManager } from '../../utils/secrets'; // Correct path
+import { SecretsManager } from '../utils/secrets'; // Correct path
 
 export interface ProviderConfig {
     model: string;
@@ -1117,8 +1617,1279 @@ export const providerFetchers: Record<string, FetchFunction> = {
   openrouter: fetchOpenRouterModels,
   grok: fetchGrokModels // x.ai Grok fetcher
 };
-===== src/gateway/LLMAdapter.ts =====
+===== src/core/Adapter.ts =====
+
+// src/core/Adapter.ts
+export interface LLMRequest {
+    prompt: string;
+    model?: string;
+    systemPrompt?: string;
+    temperature?: number;
+    maxTokens?: number;
+  }
+  
+  export interface LLMResponse {
+    output: string;
+    tokensUsed?: number;
+  }
+  
+  export interface LLMAdapter {
+    /** e.g. 'openai', 'anthropic' */
+    providerKey: string;
+    generate(request: LLMRequest): Promise<LLMResponse>;
+  }
+  
+===== src/core/Gateway.ts =====
 
 
-===== src/gateway/Gateway.ts =====
+===== src/utils/secrets.ts =====
 
+import { App, Vault, normalizePath } from 'obsidian';
+
+// Define the path for the secrets directory and file
+const SECRETS_DIR_PATH = '.secrets/nns';
+const SECRETS_FILE_PATH = normalizePath(`${SECRETS_DIR_PATH}/secrets.json`);
+
+/**
+ * Manages storing and retrieving secrets (like API keys) securely
+ * within the Obsidian vault in a dedicated file.
+ */
+export class SecretsManager {
+    private app: App;
+    private vault: Vault;
+    // In-memory cache of the secrets
+    private secrets: Record<string, string> = {};
+    // Flag to indicate if secrets have been loaded from the file
+    private isLoaded: boolean = false;
+    // Promise to ensure loading completes before other operations if needed
+    private loadPromise: Promise<void> | null = null;
+
+    /**
+     * Creates an instance of SecretsManager.
+     * @param app - The Obsidian App instance.
+     */
+    constructor(app: App) {
+        this.app = app;
+        this.vault = app.vault;
+        // Start loading secrets immediately but don't block constructor
+        this.loadPromise = this.loadSecretsFromFile();
+    }
+
+    /**
+     * Ensures that the initial loading of secrets from the file is complete.
+     * Should be called after instantiation and before relying on secrets being present.
+     */
+    async initialize(): Promise<void> {
+        if (!this.loadPromise) {
+             // Should not happen with current constructor, but safeguard
+            this.loadPromise = this.loadSecretsFromFile();
+        }
+        // Ensure the promise is awaited only once
+        if (this.loadPromise) {
+            await this.loadPromise;
+        }
+        console.log('[SecretsManager] Initialized and secrets loaded.');
+    }
+
+    /**
+     * Loads secrets from the JSON file in the vault.
+     * Creates the directory and file if they don't exist.
+     */
+    private async loadSecretsFromFile(): Promise<void> {
+        try {
+            // Ensure directory exists before trying to read the file
+            await this.ensureDirectoryExists();
+
+            if (await this.vault.adapter.exists(SECRETS_FILE_PATH)) {
+                const content = await this.vault.adapter.read(SECRETS_FILE_PATH);
+                if (content) {
+                    try {
+                        this.secrets = JSON.parse(content);
+                        console.log(`[SecretsManager] Secrets loaded from ${SECRETS_FILE_PATH}`);
+                    } catch (parseError) {
+                        console.error(`[SecretsManager] Error parsing secrets file ${SECRETS_FILE_PATH}. Using empty secrets.`, parseError);
+                        this.secrets = {}; // File is corrupted, start fresh
+                        // Optionally: Backup corrupted file
+                        // await this.vault.adapter.write(SECRETS_FILE_PATH + '.corrupted', content);
+                        await this.saveSecretsToFile(); // Overwrite corrupted file with empty object
+                    }
+                } else {
+                    this.secrets = {}; // File exists but is empty
+                     console.log(`[SecretsManager] Secrets file ${SECRETS_FILE_PATH} is empty. Initializing empty secrets.`);
+                }
+            } else {
+                console.log(`[SecretsManager] Secrets file not found at ${SECRETS_FILE_PATH}. Initializing empty secrets.`);
+                this.secrets = {};
+                // Create the file with empty content if it doesn't exist
+                await this.saveSecretsToFile();
+            }
+        } catch (error) {
+            console.error(`[SecretsManager] Error loading secrets from ${SECRETS_FILE_PATH}:`, error);
+            // Fallback to empty secrets if loading fails
+            this.secrets = {};
+        } finally {
+            this.isLoaded = true;
+            this.loadPromise = null; // Loading is complete
+        }
+    }
+
+    /**
+     * Ensures the '.secrets/nns' directory exists.
+     */
+    private async ensureDirectoryExists(): Promise<void> {
+         try {
+            // Check if the base '.secrets' directory exists
+            const baseDirExists = await this.vault.adapter.exists(normalizePath('.secrets'));
+            if (!baseDirExists) {
+                console.log("[SecretsManager] Creating base directory '.secrets'");
+                await this.vault.adapter.mkdir(normalizePath('.secrets'));
+            }
+             // Check if the specific 'nns' subdirectory exists
+            const nnsDirExists = await this.vault.adapter.exists(SECRETS_DIR_PATH);
+             if (!nnsDirExists) {
+                console.log(`[SecretsManager] Creating secrets directory at ${SECRETS_DIR_PATH}`);
+                await this.vault.adapter.mkdir(SECRETS_DIR_PATH);
+            }
+        } catch (error) {
+            // Ignore errors if directory already exists, log others
+             // Vault adapter throws if it exists, so we check the message
+            if (!(error instanceof Error && /EEXIST|already exists/i.test(error.message))) {
+                 console.error(`[SecretsManager] Error creating directory ${SECRETS_DIR_PATH}:`, error);
+                 // Re-throw if it's not an 'already exists' error, as it might be permissions etc.
+                 throw error;
+            } else {
+                 // Log if it already existed, for debugging clarity
+                 // console.log(`[SecretsManager] Directory ${SECRETS_DIR_PATH} already exists.`);
+            }
+        }
+    }
+
+    /**
+     * Saves the current in-memory secrets to the JSON file in the vault.
+     */
+    private async saveSecretsToFile(): Promise<void> {
+        // No need to wait for loadPromise here, as saving should only happen
+        // after initialization or user action, by which time loading is complete.
+        // If save is called *during* initial load (unlikely), it might cause issues.
+        // Consider adding a queue or lock if concurrent access becomes complex.
+         try {
+            await this.ensureDirectoryExists(); // Make sure directory exists before writing
+            const data = JSON.stringify(this.secrets, null, 2); // Pretty-print JSON
+            await this.vault.adapter.write(SECRETS_FILE_PATH, data);
+            // console.log(`[SecretsManager] Secrets saved to ${SECRETS_FILE_PATH}`); // Reduce log noise
+        } catch (error) {
+            console.error(`[SecretsManager] Error saving secrets to ${SECRETS_FILE_PATH}:`, error);
+            // Optionally notify the user
+            // new Notice('Failed to save secrets. Check console for details.');
+        }
+    }
+
+    /**
+     * Sets (adds or updates) a secret.
+     * @param key - The identifier for the secret (e.g., 'openai').
+     * @param value - The secret value (e.g., the API key).
+     */
+    async setSecret(key: string, value: string): Promise<void> {
+        if (!key || typeof value !== 'string') {
+            console.error('[SecretsManager] Invalid key or value provided for setSecret.');
+            return;
+        }
+        this.secrets[key] = value;
+        await this.saveSecretsToFile();
+    }
+
+    /**
+     * Retrieves a secret by its key.
+     * Returns undefined if the key is not found.
+     * Ensures secrets are loaded before returning.
+     * @param key - The identifier for the secret.
+     * @returns The secret value or undefined.
+     */
+    async getSecret(key: string): Promise<string | undefined> {
+         // Ensure initial load is complete before trying to access secrets
+         if (!this.isLoaded && this.loadPromise) {
+             console.warn('[SecretsManager] Attempted to get secret before initial load completed. Waiting...');
+             await this.loadPromise;
+         }
+        return this.secrets[key];
+    }
+
+    /**
+     * Deletes a secret by its key.
+     * Ensures secrets are loaded before deleting.
+     * @param key - The identifier for the secret to delete.
+     */
+    async deleteSecret(key: string): Promise<void> {
+         // Ensure initial load is complete
+         if (!this.isLoaded && this.loadPromise) {
+             console.warn('[SecretsManager] Attempted to delete secret before initial load completed. Waiting...');
+            await this.loadPromise;
+        }
+        if (this.secrets.hasOwnProperty(key)) {
+            delete this.secrets[key];
+            await this.saveSecretsToFile();
+        } else {
+             console.log(`[SecretsManager] Attempted to delete non-existent secret key: ${key}`);
+        }
+    }
+
+    /**
+     * Lists the keys of all stored secrets.
+     * Ensures secrets are loaded before listing.
+     * @returns An array of secret keys.
+     */
+    async listSecrets(): Promise<string[]> {
+         // Ensure initial load is complete
+         if (!this.isLoaded && this.loadPromise) {
+             console.warn('[SecretsManager] Attempted to list secrets before initial load completed. Waiting...');
+            await this.loadPromise;
+        }
+        return Object.keys(this.secrets);
+    }
+}
+
+===== src/adapters/text/GrokAdapter.ts =====
+
+import { requestUrl } from 'obsidian';
+import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
+import { fetchGrokModels } from '../../settings/providers/grok';
+
+/**
+ * GrokAdapter implements the LLMAdapter interface for Groq's API.
+ * It supports text generation using the /openai/v1/chat/completions endpoint.
+ */
+export class GrokAdapter implements LLMAdapter {
+  providerKey = 'grok';
+  private fallbackModel = 'llama3-8b-8192'; // Safe default from Groq API
+
+  constructor(
+    private apiKey: string,
+    private defaultModel: string
+  ) {
+    console.log('[GrokAdapter] Initialized with default model:', defaultModel);
+  }
+
+  private async validateModel(model?: string): Promise<string> {
+    console.log('[GrokAdapter] Validating model:', model || 'undefined');
+    const candidateModel = model || this.defaultModel;
+
+    try {
+      const availableModels = await fetchGrokModels(this.apiKey);
+      console.log('[GrokAdapter] Available models:', availableModels);
+
+      if (availableModels.includes(candidateModel)) {
+        console.log('[GrokAdapter] Model validated:', candidateModel);
+        return candidateModel;
+      }
+
+      if (availableModels.includes(this.defaultModel)) {
+        console.warn(
+          '[GrokAdapter] Invalid model provided:',
+          candidateModel,
+          'Falling back to default:',
+          this.defaultModel
+        );
+        return this.defaultModel;
+      }
+
+      if (availableModels.includes(this.fallbackModel)) {
+        console.warn(
+          '[GrokAdapter] Both provided model',
+          candidateModel,
+          'and default model',
+          this.defaultModel,
+          'are invalid. Falling back to:',
+          this.fallbackModel
+        );
+        return this.fallbackModel;
+      }
+
+      console.error('[GrokAdapter] No valid models available:', availableModels);
+      throw new Error('No valid Grok models available. Check API key or API status.');
+    } catch (error) {
+      console.error('[GrokAdapter] Error fetching available models:', error);
+      const fallback = this.defaultModel || this.fallbackModel;
+      console.warn('[GrokAdapter] Model fetch failed, using fallback model:', fallback);
+      return fallback;
+    }
+  }
+
+  async generate(req: LLMRequest): Promise<LLMResponse> {
+    const model = await this.validateModel(req.model);
+    const body = {
+      model,
+      messages: [
+        ...(req.systemPrompt ? [{ role: 'system', content: req.systemPrompt }] : []),
+        { role: 'user', content: req.prompt },
+      ],
+      temperature: req.temperature ?? 0.7,
+      max_tokens: req.maxTokens ?? 1000,
+    };
+
+    console.log('[GrokAdapter] Sending request:', {
+      url: 'https://api.groq.com/openai/v1/chat/completions',
+      body: {
+        ...body,
+        messages: body.messages.map(msg => ({
+          ...msg,
+          content: msg.content.length > 50 ? msg.content.slice(0, 50) + '...' : msg.content,
+        })),
+      },
+      headers: { Authorization: '[REDACTED]', 'Content-Type': 'application/json' },
+    });
+
+    try {
+      const resp = await requestUrl({
+        url: 'https://api.groq.com/openai/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiKey.trim()}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (resp.status >= 400) {
+        let errorMessage = `Grok error ${resp.status}`;
+        try {
+          const errorBody = resp.json?.error?.message || resp.text || 'No additional details';
+          console.error('[GrokAdapter] Error response body:', errorBody);
+          errorMessage += `: ${errorBody}`;
+          if (resp.status === 401) {
+            errorMessage += '. Invalid API key. Verify your Groq API key in settings.';
+          } else if (resp.status === 400) {
+            errorMessage += '. Check request parameters or model validity.';
+          } else if (resp.status === 429) {
+            errorMessage += '. Rate limit exceeded. Try again later or check your Groq account.';
+          }
+        } catch {
+          errorMessage += ': Failed to parse error details';
+        }
+        throw new Error(errorMessage);
+      }
+
+      const data = resp.json as any;
+      if (!data.choices || !Array.isArray(data.choices) || !data.choices[0]?.message?.content) {
+        console.error('[GrokAdapter] Unexpected response format:', data);
+        throw new Error('Unexpected Grok API response format');
+      }
+
+      const output = data.choices[0].message.content.trim();
+      const tokensUsed = data.usage?.total_tokens || 0;
+      console.log('[GrokAdapter] Response received:', {
+        output: output.length > 50 ? output.slice(0, 50) + '...' : output,
+        tokensUsed,
+        model: data.model,
+      });
+
+      return {
+        output,
+        tokensUsed,
+      };
+    } catch (error) {
+      console.error('[GrokAdapter] Generation error:', error);
+      throw error;
+    }
+  }
+}
+===== src/adapters/text/OpenRouterAdapter.ts =====
+
+import { requestUrl } from 'obsidian';
+import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
+import { fetchOpenRouterModels } from '../../settings/providers/openrouter';
+
+/**
+ * OpenRouterAdapter implements the LLMAdapter interface for OpenRouter's API.
+ * It supports text generation using the /api/v1/chat/completions endpoint.
+ */
+export class OpenRouterAdapter implements LLMAdapter {
+  providerKey = 'openrouter';
+  private fallbackModel = 'x-ai/grok-beta'; // Safe default from OpenRouter
+
+  constructor(
+    private apiKey: string,
+    private defaultModel: string
+  ) {
+    console.log('[OpenRouterAdapter] Initialized with default model:', defaultModel);
+  }
+
+  private async validateModel(model?: string): Promise<string> {
+    console.log('[OpenRouterAdapter] Validating model:', model || 'undefined');
+    const candidateModel = model || this.defaultModel;
+
+    try {
+      const availableModels = await fetchOpenRouterModels(this.apiKey);
+      console.log('[OpenRouterAdapter] Available models:', availableModels);
+
+      if (availableModels.includes(candidateModel)) {
+        console.log('[OpenRouterAdapter] Model validated:', candidateModel);
+        return candidateModel;
+      }
+
+      if (availableModels.includes(this.defaultModel)) {
+        console.warn(
+          '[OpenRouterAdapter] Invalid model provided:',
+          candidateModel,
+          'Falling back to default:',
+          this.defaultModel
+        );
+        return this.defaultModel;
+      }
+
+      if (availableModels.includes(this.fallbackModel)) {
+        console.warn(
+          '[OpenRouterAdapter] Both provided model',
+          candidateModel,
+          'and default model',
+          this.defaultModel,
+          'are invalid. Falling back to:',
+          this.fallbackModel
+        );
+        return this.fallbackModel;
+      }
+
+      console.error('[OpenRouterAdapter] No valid models available:', availableModels);
+      throw new Error('No valid OpenRouter models available. Check API key or API status.');
+    } catch (error) {
+      console.error('[OpenRouterAdapter] Error fetching available models:', error);
+      const fallback = this.defaultModel || this.fallbackModel;
+      console.warn('[OpenRouterAdapter] Model fetch failed, using fallback model:', fallback);
+      return fallback;
+    }
+  }
+
+  async generate(req: LLMRequest): Promise<LLMResponse> {
+    const model = req.model || this.defaultModel;
+    const body = {
+      model,
+      messages: [
+        ...(req.systemPrompt ? [{ role: 'system', content: req.systemPrompt }] : []),
+        { role: 'user', content: req.prompt }
+      ],
+      temperature: req.temperature ?? 0.7,
+      max_tokens: req.maxTokens ?? 1000
+    };
+  
+    const resp = await requestUrl({
+      url: 'https://openrouter.ai/api/v1/chat/completions',
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+  
+    const json = resp.json;
+  
+    if (!json.choices || !Array.isArray(json.choices)) {
+      console.error('[OpenRouterAdapter] Unexpected response format:', json);
+      throw new Error('Unexpected OpenRouter API response format');
+    }
+  
+    const content = json.choices[0]?.message?.content ?? '';
+    const tokensUsed = json.usage?.total_tokens;
+  
+    return {
+      output: content,
+      tokensUsed
+    };
+  }
+}  
+===== src/adapters/text/GroqAdapter.ts =====
+
+import { requestUrl } from 'obsidian';
+import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
+import { fetchGroqModels } from '../../settings/providers/groq';
+
+/**
+ * GroqAdapter implements the LLMAdapter interface for Groq's API.
+ * It supports text generation using the /openai/v1/chat/completions endpoint
+ * and ensures compatibility with any valid Groq model by validating against available models.
+ */
+export class GroqAdapter implements LLMAdapter {
+  providerKey = 'groq';
+  private fallbackModel = 'llama3-8b-8192'; // Safe default model from curl response
+
+  constructor(
+    private apiKey: string,
+    private defaultModel: string
+  ) {
+    console.log('[GroqAdapter] Initialized with default model:', defaultModel);
+  }
+
+  /**
+   * Validates the provided model by checking against available Groq models.
+   * Returns the provided model if valid, else falls back to defaultModel or a known model.
+   * @param model - The model to validate.
+   * @returns A valid model ID.
+   */
+  private async validateModel(model?: string): Promise<string> {
+    console.log('[GroqAdapter] Validating model:', model || 'undefined');
+
+    // If no model is provided, use the default
+    const candidateModel = model || this.defaultModel;
+
+    try {
+      const availableModels = await fetchGroqModels(this.apiKey);
+      console.log('[GroqAdapter] Available models:', availableModels);
+
+      // Check if the candidate model is in the available models
+      if (availableModels.includes(candidateModel)) {
+        console.log('[GroqAdapter] Model validated:', candidateModel);
+        return candidateModel;
+      }
+
+      // If the candidate model is invalid, check if defaultModel is valid
+      if (availableModels.includes(this.defaultModel)) {
+        console.warn(
+          '[GroqAdapter] Invalid model provided:',
+          candidateModel,
+          'Falling back to default:',
+          this.defaultModel
+        );
+        return this.defaultModel;
+      }
+
+      // If both provided and default models are invalid, fall back to a known model
+      if (availableModels.includes(this.fallbackModel)) {
+        console.warn(
+          '[GroqAdapter] Both provided model',
+          candidateModel,
+          'and default model',
+          this.defaultModel,
+          'are invalid. Falling back to:',
+          this.fallbackModel
+        );
+        return this.fallbackModel;
+      }
+
+      // If no valid models are found, throw an error
+      console.error('[GroqAdapter] No valid models available:', availableModels);
+      throw new Error('No valid Groq models available. Check API key or API status.');
+    } catch (error) {
+      console.error('[GroqAdapter] Error fetching available models:', error);
+      // If model fetch fails, fall back to defaultModel or fallbackModel
+      const fallback = this.defaultModel || this.fallbackModel;
+      console.warn('[GroqAdapter] Model fetch failed, using fallback model:', fallback);
+      return fallback;
+    }
+  }
+
+  /**
+   * Generates text using Groq's /openai/v1/chat/completions endpoint.
+   * Validates the model and constructs a proper request body.
+   * @param req - The LLM request containing prompt, model, and other parameters.
+   * @returns The generated text and token usage.
+   */
+  async generate(req: LLMRequest): Promise<LLMResponse> {
+    // Validate the model
+    const model = await this.validateModel(req.model);
+
+    // Construct the request body to match curl example
+    const body = {
+      model,
+      messages: [
+        ...(req.systemPrompt ? [{ role: 'system', content: req.systemPrompt }] : []),
+        { role: 'user', content: req.prompt },
+      ],
+      temperature: req.temperature ?? 0.7, // Default to 0.7
+      max_tokens: req.maxTokens ?? 1000, // Default to 1000
+    };
+
+    // Log the request details (redact sensitive info)
+    console.log('[GroqAdapter] Sending request:', {
+      url: 'https://api.groq.com/openai/v1/chat/completions',
+      body: {
+        ...body,
+        messages: body.messages.map(msg => ({
+          ...msg,
+          content: msg.content.length > 50 ? msg.content.slice(0, 50) + '...' : msg.content,
+        })),
+      },
+      headers: { Authorization: '[REDACTED]', 'Content-Type': 'application/json' },
+    });
+
+    try {
+      // Make the API request
+      const resp = await requestUrl({
+        url: 'https://api.groq.com/openai/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiKey.trim()}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+
+      // Handle HTTP errors
+      if (resp.status >= 400) {
+        let errorMessage = `Groq error ${resp.status}`;
+        try {
+          const errorBody = resp.json?.error?.message || resp.text || 'No additional details';
+          console.error('[GroqAdapter] Error response body:', errorBody);
+          errorMessage += `: ${errorBody}`;
+          if (resp.status === 401) {
+            errorMessage += '. Invalid API key. Please verify your Groq API key in settings.';
+          } else if (resp.status === 400) {
+            errorMessage += '. Check request parameters or model validity.';
+          } else if (resp.status === 403) {
+            errorMessage += '. Check your API key, permissions, or account status at console.groq.com.';
+          } else if (resp.status === 429) {
+            errorMessage += '. Rate limit exceeded. Try again later or check your Groq account.';
+          }
+        } catch {
+          errorMessage += ': Failed to parse error details';
+        }
+        throw new Error(errorMessage);
+      }
+
+      // Parse the response
+      const data = resp.json as any;
+      if (!data.choices || !Array.isArray(data.choices) || !data.choices[0]?.message?.content) {
+        console.error('[GroqAdapter] Unexpected response format:', data);
+        throw new Error('Unexpected Groq API response format');
+      }
+
+      // Return the generated text and token usage
+      const output = data.choices[0].message.content.trim();
+      const tokensUsed = data.usage?.total_tokens || 0;
+      console.log('[GroqAdapter] Response received:', {
+        output: output.length > 50 ? output.slice(0, 50) + '...' : output,
+        tokensUsed,
+        model: data.model, // Log the actual model used
+      });
+
+      return {
+        output,
+        tokensUsed,
+      };
+    } catch (error) {
+      console.error('[GroqAdapter] Generation error:', error);
+      throw error; // Re-throw to be handled by AiConsoleModal
+    }
+  }
+}
+===== src/adapters/text/OpenAIAdapter.ts =====
+
+// src/adapters/text/OpenAIAdapter.ts
+import { requestUrl } from 'obsidian';
+import type {
+  LLMAdapter,
+  LLMRequest,
+  LLMResponse
+} from '../../core/Adapter';
+
+export class OpenAIAdapter implements LLMAdapter {
+  providerKey = 'openai';
+
+  constructor(
+    private apiKey: string,
+    private defaultModel: string
+  ) {}
+
+  async generate(req: LLMRequest): Promise<LLMResponse> {
+    const model = req.model ?? this.defaultModel;
+    const body = {
+      model,
+      messages: [
+        { role: 'system', content: req.systemPrompt ?? '' },
+        { role: 'user', content: req.prompt }
+      ],
+      temperature: req.temperature,
+      max_tokens: req.maxTokens
+    };
+
+    const resp = await requestUrl({
+      url: 'https://api.openai.com/v1/chat/completions',
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (resp.status >= 400) {
+      throw new Error(
+        `OpenAI error ${resp.status}: ${resp.text}`
+      );
+    }
+
+    const data = resp.json as any;
+    return {
+      output: data.choices[0].message.content.trim(),
+      tokensUsed: data.usage?.total_tokens
+    };
+  }
+}
+
+===== src/adapters/text/GeminiAdapter.ts =====
+
+import { requestUrl } from 'obsidian';
+import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
+import { fetchGeminiModels } from '../../settings/providers/gemini';
+
+/**
+ * GeminiAdapter implements the LLMAdapter interface for Google's Gemini API.
+ * It supports text generation using the /v1beta/models endpoint.
+ */
+export class GeminiAdapter implements LLMAdapter {
+  providerKey = 'gemini';
+  private fallbackModel = 'gemini-2.5-pro'; // Safe default
+
+  constructor(
+    private apiKey: string,
+    private defaultModel: string
+  ) {
+    console.log('[GeminiAdapter] Initialized with default model:', defaultModel);
+  }
+
+  private async validateModel(model?: string): Promise<string> {
+    console.log('[GeminiAdapter] Validating model:', model || 'undefined');
+    const candidateModel = model || this.defaultModel;
+
+    try {
+      const availableModels = await fetchGeminiModels(this.apiKey);
+      console.log('[GeminiAdapter] Available models:', availableModels);
+
+      if (availableModels.includes(candidateModel)) {
+        console.log('[GeminiAdapter] Model validated:', candidateModel);
+        return candidateModel;
+      }
+
+      if (availableModels.includes(this.defaultModel)) {
+        console.warn(
+          '[GeminiAdapter] Invalid model provided:',
+          candidateModel,
+          'Falling back to default:',
+          this.defaultModel
+        );
+        return this.defaultModel;
+      }
+
+      if (availableModels.includes(this.fallbackModel)) {
+        console.warn(
+          '[GeminiAdapter] Both provided model',
+          candidateModel,
+          'and default model',
+          this.defaultModel,
+          'are invalid. Falling back to:',
+          this.fallbackModel
+        );
+        return this.fallbackModel;
+      }
+
+      console.error('[GeminiAdapter] No valid models available:', availableModels);
+      throw new Error('No valid Gemini models available. Check API key or API status.');
+    } catch (error) {
+      console.error('[GeminiAdapter] Error fetching available models:', error);
+      const fallback = this.defaultModel || this.fallbackModel;
+      console.warn('[GeminiAdapter] Model fetch failed, using fallback model:', fallback);
+      return fallback;
+    }
+  }
+
+  async generate(req: LLMRequest): Promise<LLMResponse> {
+    const model = await this.validateModel(req.model);
+    const body = {
+      contents: [
+        ...(req.systemPrompt
+          ? [{ parts: [{ text: req.systemPrompt }] }]
+          : []),
+        { parts: [{ text: req.prompt }] },
+      ],
+      generationConfig: {
+        temperature: req.temperature ?? 0.7,
+        maxOutputTokens: req.maxTokens ?? 1000,
+      },
+    };
+
+    console.log('[GeminiAdapter] Sending request:', {
+      url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      body: {
+        ...body,
+        contents: body.contents.map((c: any) => ({
+          parts: c.parts.map((p: any) => ({
+            text: p.text.length > 50 ? p.text.slice(0, 50) + '...' : p.text,
+          })),
+        })),
+      },
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    try {
+      const resp = await requestUrl({
+        url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ...body,
+          key: this.apiKey.trim(),
+        }),
+      });
+
+      if (resp.status >= 400) {
+        let errorMessage = `Gemini error ${resp.status}`;
+        try {
+          const errorBody = resp.json?.error?.message || resp.text || 'No additional details';
+          console.error('[GeminiAdapter] Error response body:', errorBody);
+          errorMessage += `: ${errorBody}`;
+          if (resp.status === 401 || resp.status === 403) {
+            errorMessage += '. Invalid API key. Verify your Gemini API key in settings.';
+          } else if (resp.status === 429) {
+            errorMessage += '. Rate limit exceeded. Try again later or check your Google AI Studio account.';
+          }
+        } catch {
+          errorMessage += ': Failed to parse error details';
+        }
+        throw new Error(errorMessage);
+      }
+
+      const data = resp.json as any;
+      if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
+        console.error('[GeminiAdapter] Unexpected response format:', data);
+        throw new Error('Unexpected Gemini API response format');
+      }
+
+      const output = data.candidates[0].content.parts[0].text.trim();
+      const tokensUsed = data.usageMetadata?.totalTokenCount || 0;
+      console.log('[GeminiAdapter] Response received:', {
+        output: output.length > 50 ? output.slice(0, 50) + '...' : output,
+        tokensUsed,
+      });
+
+      return {
+        output,
+        tokensUsed,
+      };
+    } catch (error) {
+      console.error('[GeminiAdapter] Generation error:', error);
+      throw error;
+    }
+  }
+}
+===== src/adapters/text/AnthropicAdapter.ts =====
+
+import { requestUrl } from 'obsidian';
+import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
+import { fetchAnthropicModels } from '../../settings/providers/anthropic';
+
+/**
+ * AnthropicAdapter implements the LLMAdapter interface for Anthropic's API.
+ * It supports text generation using the /v1/messages endpoint and ensures
+ * compatibility with any valid Anthropic model by validating against available models.
+ */
+export class AnthropicAdapter implements LLMAdapter {
+  providerKey = 'anthropic';
+  private apiVersion = '2023-06-01'; // Stable Anthropic API version
+  private fallbackModel = 'claude-3-5-sonnet-latest'; // Safe default model
+
+  constructor(
+    private apiKey: string,
+    private defaultModel: string
+  ) {}
+
+  /**
+   * Validates the provided model by checking against available Anthropic models.
+   * Returns the provided model if valid, else falls back to defaultModel or a known model.
+   * @param model - The model to validate.
+   * @returns A valid model ID.
+   */
+  private async validateModel(model?: string): Promise<string> {
+    console.log('[AnthropicAdapter] Validating model:', model || 'undefined');
+
+    // If no model is provided, use the default
+    const candidateModel = model || this.defaultModel;
+
+    try {
+      const availableModels = await fetchAnthropicModels(this.apiKey);
+      console.log('[AnthropicAdapter] Available models:', availableModels);
+
+      // Check if the candidate model is in the available models
+      if (availableModels.includes(candidateModel)) {
+        console.log('[AnthropicAdapter] Model validated:', candidateModel);
+        return candidateModel;
+      }
+
+      // If the candidate model is invalid, check if defaultModel is valid
+      if (availableModels.includes(this.defaultModel)) {
+        console.warn(
+          '[AnthropicAdapter] Invalid model provided:',
+          candidateModel,
+          'Falling back to default:',
+          this.defaultModel
+        );
+        return this.defaultModel;
+      }
+
+      // If both provided and default models are invalid, fall back to a known model
+      if (availableModels.includes(this.fallbackModel)) {
+        console.warn(
+          '[AnthropicAdapter] Both provided model',
+          candidateModel,
+          'and default model',
+          this.defaultModel,
+          'are invalid. Falling back to:',
+          this.fallbackModel
+        );
+        return this.fallbackModel;
+      }
+
+      // If no valid models are found, throw an error
+      console.error('[AnthropicAdapter] No valid models available:', availableModels);
+      throw new Error('No valid Anthropic models available. Check API key or API status.');
+    } catch (error) {
+      console.error('[AnthropicAdapter] Error fetching available models:', error);
+      // If model fetch fails, fall back to defaultModel or fallbackModel
+      const fallback = this.defaultModel || this.fallbackModel;
+      console.warn('[AnthropicAdapter] Model fetch failed, using fallback model:', fallback);
+      return fallback;
+    }
+  }
+
+  /**
+   * Generates text using Anthropic's /v1/messages endpoint.
+   * Validates the model and constructs a proper request body.
+   * @param req - The LLM request containing prompt, model, and other parameters.
+   * @returns The generated text and token usage.
+   */
+  async generate(req: LLMRequest): Promise<LLMResponse> {
+    // Validate the model
+    const model = await this.validateModel(req.model);
+
+    // Construct the request body
+    const body = {
+      model,
+      messages: [
+        ...(req.systemPrompt ? [{ role: 'system', content: req.systemPrompt }] : []),
+        { role: 'user', content: req.prompt },
+      ],
+      max_tokens: req.maxTokens ?? 1000, // Default to 1000 if unspecified
+      temperature: req.temperature ?? 0.7, // Default to 0.7 if unspecified
+    };
+
+    // Log the request details (redact sensitive info)
+    console.log('[AnthropicAdapter] Sending request:', {
+      url: 'https://api.anthropic.com/v1/messages',
+      body: {
+        ...body,
+        messages: body.messages.map(msg => ({
+          ...msg,
+          content: msg.content.length > 50 ? msg.content.slice(0, 50) + '...' : msg.content,
+        })),
+      },
+      headers: { 'x-api-key': '[REDACTED]', 'anthropic-version': this.apiVersion },
+    });
+
+    try {
+      // Make the API request
+      const resp = await requestUrl({
+        url: 'https://api.anthropic.com/v1/messages',
+        method: 'POST',
+        headers: {
+          'x-api-key': this.apiKey.trim(),
+          'Content-Type': 'application/json',
+          'anthropic-version': this.apiVersion,
+        },
+        body: JSON.stringify(body),
+      });
+
+      // Handle HTTP errors
+      if (resp.status >= 400) {
+        let errorMessage = `Anthropic error ${resp.status}`;
+        try {
+          const errorBody = resp.json?.error?.message || resp.text || 'No additional details';
+          console.error('[AnthropicAdapter] Error response body:', errorBody);
+          errorMessage += `: ${errorBody}`;
+          if (resp.status === 401) {
+            errorMessage += '. Invalid API key.';
+          } else if (resp.status === 400) {
+            errorMessage += '. Check request parameters or model validity.';
+          }
+        } catch {
+          errorMessage += ': Failed to parse error details';
+        }
+        throw new Error(errorMessage);
+      }
+
+      // Parse the response
+      const data = resp.json as any;
+      if (!data.content || !Array.isArray(data.content) || !data.content[0]?.text) {
+        console.error('[AnthropicAdapter] Unexpected response format:', data);
+        throw new Error('Unexpected Anthropic API response format');
+      }
+
+      // Return the generated text and token usage
+      const output = data.content[0].text.trim();
+      const tokensUsed = (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0);
+      console.log('[AnthropicAdapter] Response received:', {
+        output: output.length > 50 ? output.slice(0, 50) + '...' : output,
+        tokensUsed,
+      });
+
+      return {
+        output,
+        tokensUsed,
+      };
+    } catch (error) {
+      console.error('[AnthropicAdapter] Generation error:', error);
+      throw error; // Re-throw to be handled by TextGateway or AiConsoleModal
+    }
+  }
+}
+===== src/gateways/ImageGateway.ts =====
+
+
+===== src/gateways/TextGateway.ts =====
+
+import type { SecretsManager } from '../utils/secrets';
+import type { MyPluginSettings } from '../settings/settings';
+import { providerMetadata } from '../settings/providers/index';
+import type { LLMAdapter, LLMRequest } from '../core/Adapter';
+import { OpenAIAdapter } from '../adapters/text/OpenAIAdapter';
+import { AnthropicAdapter } from '../adapters/text/AnthropicAdapter';
+import { GrokAdapter } from '../adapters/text/GrokAdapter';
+import { OpenRouterAdapter } from '../adapters/text/OpenRouterAdapter';
+import { GeminiAdapter } from '../adapters/text/GeminiAdapter';
+
+export class TextGateway {
+  private adapters: Record<string, LLMAdapter> = {};
+
+  private constructor(
+    private defaultProvider: string,
+    private backupProvider: string
+  ) {}
+
+  /** Factory that reads your settings & secrets and instantiates one adapter per provider */
+  static async create(
+    secrets: SecretsManager,
+    settings: MyPluginSettings
+  ): Promise<TextGateway> {
+    const gw = new TextGateway(
+      settings.defaultProvider,
+      settings.backupProvider
+    );
+
+    for (const key of Object.keys(settings.providers)) {
+      const model = settings.providers[key].model;
+      let apiKey: string | undefined;
+
+      // Grab the key if needed
+      if (providerMetadata[key].requiresApiKey) {
+        apiKey = await secrets.getSecret(key);
+        if (!apiKey) {
+          console.warn(`[TextGateway] No API key found for ${key}. Skipping adapter.`);
+          continue;
+        }
+      }
+
+      // Instantiate the right adapter
+      let adapter: LLMAdapter;
+      switch (key) {
+        case 'openai':
+          adapter = new OpenAIAdapter(apiKey!, model);
+          break;
+        case 'anthropic':
+          adapter = new AnthropicAdapter(apiKey!, model);
+          break;
+        case 'grok':
+          adapter = new GrokAdapter(apiKey!, model);
+          break;
+        case 'openrouter':
+          adapter = new OpenRouterAdapter(apiKey!, model);
+          break;
+        case 'gemini':
+          adapter = new GeminiAdapter(apiKey!, model);
+          break;
+        default:
+          console.warn(`[TextGateway] Unsupported provider: ${key}`);
+          continue; // skip unsupported
+      }
+
+      console.log(`[TextGateway] Adapter created for ${key} with model: ${model}`);
+      gw.adapters[key] = adapter;
+    }
+
+    console.log('[TextGateway] Initialized adapters:', Object.keys(gw.adapters));
+    return gw;
+  }
+
+  /** Single entry point: try default, then fallback */
+  async generate(request: LLMRequest): Promise<string> {
+    const primary = this.adapters[this.defaultProvider];
+    try {
+      if (!primary) {
+        throw new Error(`No adapter found for default provider: ${this.defaultProvider}`);
+      }
+      const res = await primary.generate(request);
+      return res.output;
+    } catch (err) {
+      if (
+        this.backupProvider &&
+        this.adapters[this.backupProvider]
+      ) {
+        console.log(`[TextGateway] Falling back to backup provider: ${this.backupProvider}`);
+        const fallback = await this.adapters[
+          this.backupProvider
+        ].generate(request);
+        return fallback.output;
+      }
+      throw err;
+    }
+  }
+}
+===== src/gateways/VisionGateway.ts =====
+
+
+===== src/gateways/VideoGateway.ts =====
+
+
+===== src/gateways/SpeechGateway.ts =====
+
+
+===== src/api/aiNNS.ts =====
+
+import type { App } from 'obsidian';
+import type { SecretsManager } from '../utils/secrets';
+import type { MyPluginSettings } from '../settings/settings';
+
+import { TextGateway } from '../gateways/TextGateway';
+//import { ImageGateway } from '../gateways/ImageGateway';
+//import { SpeechGateway } from '../gateways/SpeechGateway';
+//import { VideoGateway } from '../gateways/VideoGateway';
+//import { VisionGateway } from '../gateways/VisionGateway';
+
+/* ---------------------------------- *
+ * Interfaces for Each AI Modality   *
+ * ---------------------------------- */
+export interface TextAPI {
+  generate(
+    prompt: string,
+    opts?: {
+      model?: string;
+      temperature?: number;
+      maxTokens?: number;
+    }
+  ): Promise<string>;
+}
+
+export interface ImageAPI {
+  generate(
+    prompt: string,
+    opts?: {
+      model?: string;
+      width?: number;
+      height?: number;
+    }
+  ): Promise<string>;
+}
+
+export interface SpeechAPI {
+  synthesize(
+    text: string,
+    opts?: {
+      voice?: string;
+      format?: string;
+    }
+  ): Promise<string>;
+
+  recognize(
+    audioData: ArrayBuffer,
+    opts?: {
+      model?: string;
+    }
+  ): Promise<string>;
+}
+
+export interface VideoAPI {
+  generate(
+    prompt: string,
+    opts?: {
+      model?: string;
+      durationSeconds?: number;
+    }
+  ): Promise<string>;
+
+  caption(
+    videoData: ArrayBuffer,
+    opts?: {
+      model?: string;
+    }
+  ): Promise<string>;
+}
+
+export interface VisionAPI {
+  caption(
+    imageData: ArrayBuffer,
+    opts?: {
+      model?: string;
+    }
+  ): Promise<string>;
+}
+
+/* ---------------------------------- *
+ * Global Window Interface Extension *
+ * ---------------------------------- */
+declare global {
+  interface Window {
+    aiNNS?: {
+      text: TextAPI;
+      //image: ImageAPI;
+      //speech: SpeechAPI;
+     // video: VideoAPI;
+      //vision: VisionAPI;
+    };
+  }
+}
+
+/* ---------------------------------- *
+ * Register aiNNS on Global Scope    *
+ * ---------------------------------- */
+export async function registerAiNNS(
+  app: App,
+  secrets: SecretsManager,
+  settings: MyPluginSettings
+) {
+  const textGw = await TextGateway.create(secrets, settings);
+  //const imageGw = new ImageGateway(secrets, settings);
+  //const speechGw = new SpeechGateway(secrets, settings);
+  //const videoGw = new VideoGateway(secrets, settings);
+  //const visionGw = new VisionGateway(secrets, settings);
+
+  window.aiNNS = {
+    text: {
+      generate: (prompt, opts) =>
+        textGw.generate({ prompt, ...opts }),
+    },/*
+    image: {
+      generate: (prompt, opts) =>
+        imageGw.generate({ prompt, ...opts }),
+    },
+    speech: {
+      synthesize: (text, opts) =>
+        speechGw.synthesize({ text, ...opts }),
+      recognize: (audioData, opts) =>
+        speechGw.recognize({ audioData, ...opts }),
+    },
+    video: {
+      generate: (prompt, opts) =>
+        videoGw.generate({ prompt, ...opts }),
+      caption: (videoData, opts) =>
+        videoGw.caption({ videoData, ...opts }),
+    },
+    vision: {
+      caption: (imageData, opts) =>
+        visionGw.caption({ imageData, ...opts }),
+    },*/
+  };
+}
+
+/* ---------------------------------- *
+ * Cleanup aiNNS on Plugin Unload    *
+ * ---------------------------------- */
+export function unregisterAiNNS() {
+  delete window.aiNNS;
+}

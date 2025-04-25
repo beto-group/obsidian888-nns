@@ -34,66 +34,47 @@ interface GeminiListModelsResponse {
  * @returns A promise that resolves to an array of model names (e.g., "models/gemini-pro").
  * @throws An error if the API request fails or returns an error status.
  */
+/**
+ * Fetches available models from the Gemini API.
+ * Ensures model names are correctly formatted for use in generateContent endpoint.
+ */
 export async function fetchGeminiModels(apiKey: string): Promise<string[]> {
-	// Construct the URL for the models.list endpoint, including the API key as a query parameter.
-	// Note: The v1beta version is used as specified in the documentation.
-	const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey.trim()}`;
-
 	try {
-		console.log('[Gemini] Fetching models from:', url); // Log the request URL (excluding key in production logs ideally)
-
-		// Make the GET request using Obsidian's requestUrl function.
-		// No request body is needed for this endpoint.
-		const response = await requestUrl({
-			url: url,
+	  // Try v1 first, then fallback to v1beta
+	  const apiVersions = ['v1', 'v1beta'];
+	  let lastError: Error | null = null;
+  
+	  for (const apiVersion of apiVersions) {
+		const url = `https://generativelanguage.googleapis.com/${apiVersion}/models?key=${apiKey}`;
+		console.log('[fetchGeminiModels] Fetching models with URL:', url);
+  
+		try {
+		  const resp = await requestUrl({
+			url,
 			method: 'GET',
-			headers: {
-				'Content-Type': 'application/json' // Standard header, though not strictly necessary for GET
-			}
-		});
-
-		// Check if the response status indicates an error (>= 400).
-		if (response.status >= 400) {
-			let errorMessage = `Gemini API error: ${response.status}`;
-			try {
-				// Attempt to parse the error message from the response body.
-				const errorBody = response.json?.error?.message || response.text || 'No additional details';
-				console.error('[Gemini] Error response body:', errorBody);
-				errorMessage += ` - ${errorBody}`;
-				if (response.status === 400) {
-					errorMessage += '. Check API key or request format.';
-				} else if (response.status === 401 || response.status === 403) {
-                    errorMessage += '. Check if the API key is valid and has permissions for the Generative Language API.';
-                } else if (response.status === 429) {
-                    errorMessage += '. Rate limit exceeded. Please try again later.';
-                }
-			} catch (parseError) {
-				// Fallback if parsing the error response fails.
-				errorMessage += ` - Failed to parse error details: ${response.text}`;
-			}
-			// Throw an error to be caught by the calling function (e.g., in settings tab).
-			throw new Error(errorMessage);
+		  });
+  
+		  if (resp.status !== 200) {
+			throw new Error(`Failed to fetch Gemini models: ${resp.status} - ${resp.text || 'No details'}`);
+		  }
+  
+		  const data = resp.json as { models: { name: string }[] };
+		  // Normalize model names by removing 'models/' prefix
+		  const models = data.models
+			.map(m => m.name.replace(/^models\//, ''))
+			.filter(m => m.startsWith('gemini')); // Only include Gemini models
+		  console.log('[fetchGeminiModels] Fetched models:', models);
+		  return models;
+		} catch (error) {
+		  console.error('[fetchGeminiModels] Error for API version', apiVersion, ':', error);
+		  lastError = error;
+		  continue;
 		}
-
-		// Parse the successful JSON response.
-		const data = response.json as GeminiListModelsResponse;
-
-		// Extract the 'name' field from each model object in the 'models' array.
-		// The 'name' field contains the full model identifier (e.g., "models/gemini-pro").
-		// Sort the names alphabetically for consistent display.
-		// Provide an empty array as a fallback if 'models' is missing or empty.
-		const modelNames = data.models?.map((m: GeminiModel) => m.name).sort() ?? [];
-
-		console.log('[Gemini] Successfully fetched models:', modelNames);
-		return modelNames;
-
-	} catch (err) {
-		// Log the error and re-throw it to ensure the calling code is aware of the failure.
-		console.error('[Gemini] Model fetch operation failed:', err);
-		// Add a more specific prefix to the re-thrown error if it's not already a Gemini API error.
-        if (err instanceof Error && !err.message.startsWith('Gemini API error')) {
-            throw new Error(`[Gemini] Network or parsing error: ${err.message}`);
-        }
-		throw err; // Re-throw the original error (could be the one thrown above or a network error)
+	  }
+  
+	  throw lastError || new Error('Failed to fetch models with all API versions');
+	} catch (error) {
+	  console.error('[fetchGeminiModels] Error:', error);
+	  return ['gemini-1.5-pro-latest', 'gemini-1.5-flash-latest']; // Fallback models
 	}
-}
+  }
