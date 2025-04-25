@@ -1,7 +1,7 @@
 import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
 import type MyPlugin from '../../main';
 import { providerFetchers, providerMetadata } from './providers/index';
-import { SecretsManager } from '../../utils/secrets'; // Correct path
+import { SecretsManager } from '../utils/secrets'; // Correct path
 
 export interface ProviderConfig {
     model: string;

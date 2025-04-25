@@ -13,7 +13,7 @@ import {
     SampleSettingTab
 } from './src/settings/settings';
 
-import { SecretsManager } from './utils/secrets'; // Correct path
+import { SecretsManager } from './src/utils/secrets'; // Correct path
 
 /**
  * Main Plugin Class
