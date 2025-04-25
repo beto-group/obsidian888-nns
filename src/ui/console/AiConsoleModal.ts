@@ -1,9 +1,9 @@
 import { App, Modal, Setting, Notice, SliderComponent, TextComponent } from 'obsidian';
-import type { MyPluginSettings } from '../settings/settings';
-import type { SecretsManager } from '../utils/secrets';
-import { providerMetadata, providerFetchers } from '../settings/providers/index';
-import { TextGateway } from '../gateways/TextGateway';
-import type { LLMRequest, LLMResponse } from '../core/Adapter';
+import type { MyPluginSettings } from '../../settings/settings';
+import type { SecretsManager } from '../../utils/secrets';
+import { providerMetadata, providerFetchers } from '../../settings/providers/index';
+import { TextGateway } from '../../gateways/TextGateway';
+import type { LLMRequest, LLMResponse } from '../../core/Adapter';
 
 interface PromptHistoryEntry {
   provider: string;
