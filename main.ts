@@ -14,7 +14,7 @@ import {
 } from './src/settings/settings';
 
 import { SecretsManager } from './src/utils/secrets';
-import { AiConsoleModal } from './src/ui/AiConsoleModal';
+import { AiConsoleModal } from './src/ui/console/AiConsoleModal';
 import { registerAiNNS, unregisterAiNNS } from './src/api/aiNNS';
 
 /**
