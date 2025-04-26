@@ -7,12 +7,9 @@ import {
     Plugin
 } from 'obsidian';
 
-import {
-    MyPluginSettings,
-    DEFAULT_SETTINGS,
-    SampleSettingTab
-} from './src/settings/settings';
-
+import { SampleSettingTab } from './src/settings/settings';
+import { DEFAULT_SETTINGS } from './src/settings/defaults';
+import { MyPluginSettings } from './src/settings/types';
 import { SecretsManager } from './src/utils/secrets';
 import { AiConsoleModal } from './src/ui/console/AiConsoleModal';
 import { registerAiNNS, unregisterAiNNS } from './src/api/aiNNS';

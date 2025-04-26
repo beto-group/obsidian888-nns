@@ -1,5 +1,5 @@
 import type { SecretsManager } from '../utils/secrets';
-import type { MyPluginSettings } from '../settings/settings';
+import type { MyPluginSettings } from '../settings/types';
 import { providerMetadata } from '../settings/providers/index';
 import type { LLMAdapter, LLMRequest } from '../core/Adapter';
 import { OpenAIAdapter } from '../adapters/text/OpenAIAdapter';
@@ -7,7 +7,7 @@ import { AnthropicAdapter } from '../adapters/text/AnthropicAdapter';
 import { GrokAdapter } from '../adapters/text/GrokAdapter';
 import { OpenRouterAdapter } from '../adapters/text/OpenRouterAdapter';
 import { GeminiAdapter } from '../adapters/text/GeminiAdapter';
-import { GroqAdapter } from '../adapters/text/GroqAdapter'; // Added import for GroqAdapter
+import { GroqAdapter } from '../adapters/text/GroqAdapter';
 
 export class TextGateway {
   private adapters: Record<string, LLMAdapter> = {};
@@ -23,8 +23,8 @@ export class TextGateway {
     settings: MyPluginSettings
   ): Promise<TextGateway> {
     const gw = new TextGateway(
-      settings.defaultProvider,
-      settings.backupProvider
+      settings.categories.text.defaultProvider,
+      settings.categories.text.backupProvider
     );
 
     for (const key of Object.keys(settings.providers)) {
@@ -58,7 +58,7 @@ export class TextGateway {
         case 'gemini':
           adapter = new GeminiAdapter(apiKey!, model);
           break;
-        case 'groq': // Added case for groq provider
+        case 'groq':
           adapter = new GroqAdapter(apiKey!, model);
           break;
         default:

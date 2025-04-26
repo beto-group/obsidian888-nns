@@ -194,9 +194,144 @@ class SampleModal extends Modal {
 ===== src/types.ts =====
 
 
+===== src/ui/components/TabComponent.ts =====
+
+import { App, setIcon } from 'obsidian';
+import { consoleCSS } from '../console/styles/consoleStyles';
+
+/**
+ * Interface for a tab in the TabComponent.
+ */
+export interface Tab {
+  id: string;
+  name: string;
+  render(container: HTMLElement): void;
+  cleanup(): void;
+}
+
+/**
+ * Configuration for a tab, including its icon.
+ */
+export interface TabConfig {
+  tab: Tab;
+  icon: string;
+}
+
+/**
+ * Reusable TabComponent for managing and rendering tabs.
+ */
+export class TabComponent {
+  private activeTabId: string;
+  private container: HTMLElement | null = null;
+  private tabContentContainer: HTMLElement | null = null;
+  private styleElement: HTMLStyleElement | null = null;
+
+  constructor(
+    private app: App,
+    private tabs: TabConfig[],
+    initialTabId: string
+  ) {
+    this.activeTabId = tabs.some(t => t.tab.id === initialTabId) ? initialTabId : tabs[0]?.tab.id;
+  }
+
+  /**
+   * Renders the tab selector and content area into the provided container.
+   */
+  render(container: HTMLElement): void {
+    this.container = container;
+
+    // Inject CSS styles
+    this.styleElement = document.createElement('style');
+    this.styleElement.textContent = consoleCSS;
+    document.head.appendChild(this.styleElement);
+
+    // Create tab selector
+    const tabSelector = this.container.createEl('div', { cls: 'ai-console-tab-selector' });
+
+    // Render tab buttons
+    this.tabs.forEach(({ tab, icon }) => {
+      const isActive = tab.id === this.activeTabId;
+      const tabButton = tabSelector.createEl('button', {
+        cls: `ai-console-tab-button${isActive ? ' active' : ''}`,
+      });
+    
+      // Use the icon from TabConfig
+      const iconEl = tabButton.createEl('span', { cls: 'ai-console-tab-icon' });
+      setIcon(iconEl, icon);
+    
+      // Add label with proper spacing
+      tabButton.createSpan({ cls: 'ai-console-tab-label', text: tab.name.split(' ')[0] });
+    
+      // Handle click
+      tabButton.addEventListener('click', () => this.switchTab(tab.id));
+    });
+
+    // Create content container
+    this.tabContentContainer = this.container.createEl('div', { cls: 'ai-console-tab-content' });
+
+    // Render initial active tab
+    this.renderActiveTab();
+  }
+
+  /**
+Interp   * Switches to the specified tab and re-renders the content.
+   */
+  private switchTab(tabId: string): void {
+    if (tabId === this.activeTabId) return;
+    this.activeTabId = tabId;
+    this.renderActiveTab();
+  }
+
+  /**
+   * Renders the content of the active tab and updates button states.
+   */
+  private renderActiveTab(): void {
+    if (!this.container || !this.tabContentContainer) return;
+
+    // Update button states
+    const buttons = this.container.querySelectorAll('.ai-console-tab-button');
+    const activeTabName = this.tabs.find(t => t.tab.id === this.activeTabId)?.tab.name.split(' ')[0] || '';
+
+    buttons.forEach(button => {
+      const buttonLabel = button.querySelector('.ai-console-tab-label')?.textContent || '';
+      const isActive = buttonLabel === activeTabName;
+      button.classList.toggle('active', isActive);
+    });
+
+    // Clear and render active tab content
+    this.tabContentContainer.empty();
+    const activeTab = this.tabs.find(t => t.tab.id === this.activeTabId)?.tab;
+    if (activeTab) {
+      activeTab.render(this.tabContentContainer);
+    }
+  }
+
+  /**
+   * Cleans up the component, including styles and tab content.
+   */
+  cleanup(): void {
+    this.tabs.forEach(({ tab }) => tab.cleanup());
+    if (this.container) {
+      this.container.empty();
+    }
+    if (this.styleElement && this.styleElement.parentNode) {
+      this.styleElement.parentNode.removeChild(this.styleElement);
+    }
+    this.container = null;
+    this.tabContentContainer = null;
+    this.styleElement = null;
+  }
+
+  /**
+   * Gets the ID of the currently active tab.
+   */
+  getActiveTabId(): string {
+    return this.activeTabId;
+  }
+}
 ===== src/ui/console/AiConsoleModal.ts =====
 
-import { App, Modal, Notice, setIcon } from 'obsidian';
+import { App, Modal, Notice } from 'obsidian';
 import type { MyPluginSettings } from '../../settings/settings';
 import type { SecretsManager } from '../../utils/secrets';
 import { TextConsoleTab } from './tabs/TextConsoleTab';
@@ -204,7 +339,8 @@ import { ImageConsoleTab } from './tabs/ImageConsoleTab';
 import { VideoConsoleTab } from './tabs/VideoConsoleTab';
 import { AudioConsoleTab } from './tabs/AudioConsoleTab';
 import { OcrConsoleTab } from './tabs/OcrConsoleTab';
-import { consoleCSS } from './styles/consoleStyles'; // 🔥 Make sure your build supports this
+import { ThreeDConsoleTab } from './tabs/ThreeDConsoleTab';
+import { TabComponent, TabConfig } from '../components/TabComponent';
 
 interface PromptHistoryEntry {
   provider: string;
@@ -217,6 +353,7 @@ interface PromptHistoryEntry {
 interface ConsoleTab {
   id: string;
   name: string;
+  icon: string;
   render(container: HTMLElement): void;
   cleanup(): void;
   renderHistory?(history: PromptHistoryEntry[]): void;
@@ -226,8 +363,7 @@ export class AiConsoleModal extends Modal {
   private settings: MyPluginSettings;
   private secrets: SecretsManager;
   private tabs: ConsoleTab[] = [];
-  private activeTab: string = 'text';
-  private container: HTMLElement;
+  private tabComponent: TabComponent;
   private history: PromptHistoryEntry[] = [];
   private maxHistoryEntries = 10;
 
@@ -236,6 +372,11 @@ export class AiConsoleModal extends Modal {
     this.settings = settings;
     this.secrets = secrets;
     this.initializeTabs();
+    const tabConfigs: TabConfig[] = this.tabs.map(tab => ({
+      tab,
+      icon: tab.icon
+    }));
+    this.tabComponent = new TabComponent(this.app, tabConfigs, 'text');
   }
 
   private initializeTabs() {
@@ -245,6 +386,7 @@ export class AiConsoleModal extends Modal {
       new VideoConsoleTab(this.app, this.settings, this.secrets),
       new AudioConsoleTab(this.app, this.settings, this.secrets),
       new OcrConsoleTab(this.app, this.settings, this.secrets),
+      new ThreeDConsoleTab(this.app, this.settings, this.secrets)
     ];
   }
 
@@ -252,53 +394,8 @@ export class AiConsoleModal extends Modal {
     console.log('[AiConsoleModal] Opening modal...');
     this.titleEl.setText('AI Console Playground');
     this.contentEl.empty();
-    this.container = this.contentEl.createEl('div', { cls: 'ai-console-container' });
-
-    // 🔥 Inject CSS as string into <head>
-    const style = document.createElement('style');
-    style.textContent = consoleCSS;
-    document.head.appendChild(style);
-
-    this.renderActiveTab();
-  }
-
-  private switchTab(tabId: string) {
-    this.activeTab = tabId;
-    this.renderActiveTab();
-  }
-
-  private renderActiveTab() {
-    this.container.empty();
-
-    const tabIcons: Record<string, string> = {
-      text: 'text',
-      image: 'image',
-      video: 'video',
-      audio: 'volume-2',
-      ocr: 'scan'
-    };
-
-    const tabSelector = this.container.createEl('div', { cls: 'ai-console-tab-selector' });
-
-    this.tabs.forEach(tab => {
-      const isActive = tab.id === this.activeTab;
-      const tabButton = tabSelector.createEl('button', {
-        cls: `ai-console-tab-button${isActive ? ' active' : ''}`
-      });
-
-      const iconName = tabIcons[tab.id];
-      if (iconName) {
-        const iconEl = tabButton.createEl('span', { cls: 'ai-console-tab-icon' });
-        setIcon(iconEl, iconName);
-      }
-
-      tabButton.createSpan({ cls: 'ai-console-tab-label', text: tab.name.split(' ')[0] });
-      tabButton.addEventListener('click', () => this.switchTab(tab.id));
-    });
-
-    const content = this.container.createEl('div', { cls: 'ai-console-tab-content' });
-    const active = this.tabs.find(t => t.id === this.activeTab);
-    if (active) active.render(content);
+    const container = this.contentEl.createEl('div', { cls: 'ai-console-container' });
+    this.tabComponent.render(container);
   }
 
   private addToHistory(entry: PromptHistoryEntry) {
@@ -310,19 +407,17 @@ export class AiConsoleModal extends Modal {
   }
 
   public renderHistory() {
-    const activeTab = this.tabs.find(tab => tab.id === this.activeTab);
+    const activeTab = this.tabs.find(tab => tab.id === this.tabComponent.getActiveTabId());
     if (activeTab && activeTab.renderHistory) {
       activeTab.renderHistory(this.history);
     }
   }
 
   onClose() {
-    this.tabs.forEach(tab => tab.cleanup());
-    this.container.empty();
+    this.tabComponent.cleanup();
     console.log('[AiConsoleModal] Modal closed.');
   }
 }
-
 ===== src/ui/console/tabs/ImageConsoleTab.ts =====
 
 // src/ui/console/tabs/ImageConsoleTab.ts
@@ -333,6 +428,7 @@ import type { SecretsManager } from '../../../utils/secrets';
 export class ImageConsoleTab {
   id = 'image';
   name = 'Image Playground';
+  icon = 'image';
 
   constructor(
     private app: App,
@@ -342,6 +438,29 @@ export class ImageConsoleTab {
 
   render(container: HTMLElement) {
     container.createEl('p', { text: 'Image Console (Coming Soon)' });
+  }
+
+  cleanup() {}
+}
+===== src/ui/console/tabs/ThreeDConsoleTab.ts =====
+
+import { App } from 'obsidian';
+import type { MyPluginSettings } from '../../../settings/settings';
+import type { SecretsManager } from '../../../utils/secrets';
+
+export class ThreeDConsoleTab {
+  id = '3d';
+  name = '3D Playground';
+  icon = 'cube';
+
+  constructor(
+    private app: App,
+    private settings: MyPluginSettings,
+    private secrets: SecretsManager
+  ) {}
+
+  render(container: HTMLElement) {
+    container.createEl('p', { text: '3D Console (Coming Soon)' });
   }
 
   cleanup() {}
@@ -356,6 +475,7 @@ import type { SecretsManager } from '../../../utils/secrets';
 export class VideoConsoleTab {
   id = 'video';
   name = 'Video Playground';
+  icon = 'film';
 
   constructor(
     private app: App,
@@ -394,6 +514,7 @@ interface PromptHistoryEntry {
 export class TextConsoleTab {
   id = 'text';
   name = 'Text Playground';
+  icon = 'file-text';
   private textGateway?: TextGateway;
   private providerSelector: ProviderSelector;
   private parameterControls: ParameterControls;
@@ -530,6 +651,7 @@ import type { SecretsManager } from '../../../utils/secrets';
 export class OcrConsoleTab {
   id = 'ocr';
   name = 'OCR Playground';
+  icon = 'scan';
 
   constructor(
     private app: App,
@@ -553,6 +675,7 @@ import type { SecretsManager } from '../../../utils/secrets';
 export class AudioConsoleTab {
   id = 'audio';
   name = 'Audio Playground';
+  icon = 'volume-2';
 
   constructor(
     private app: App,
@@ -904,13 +1027,34 @@ export const consoleCSS = `
   background: #2F2F2F;
   padding: 0;
   border-bottom: 1px solid var(--background-modifier-border);
+  flex-wrap: nowrap; /* Prevent wrapping to ensure all tabs are visible */
+  overflow-x: auto; /* Allow horizontal scrolling if tabs overflow */
+  -webkit-overflow-scrolling: touch; /* Smooth scrolling on touch devices */
+}
+
+/* Custom Scrollbar Styling */
+.ai-console-tab-selector::-webkit-scrollbar {
+  height: 4px; /* Slimmer scrollbar */
+}
+
+.ai-console-tab-selector::-webkit-scrollbar-track {
+  background: #2F2F2F; /* Match the background of the tab selector */
+}
+
+.ai-console-tab-selector::-webkit-scrollbar-thumb {
+  background: var(--background-modifier-border); /* Subtle thumb color */
+  border-radius: 2px;
+}
+
+.ai-console-tab-selector::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted); /* Slightly lighter on hover */
 }
 
 .ai-console-tab-button {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
+  gap: 8px; /* Gap between icon and label */
+  padding: 8px 14px; /* Increased padding for better spacing */
   border: none;
   border-right: 1px solid var(--background-modifier-border);
   background: #2F2F2F;
@@ -920,10 +1064,12 @@ export const consoleCSS = `
   cursor: pointer;
   transition: all 0.2s ease;
   position: relative;
-  flex: 1;
   text-align: center;
   justify-content: center;
   opacity: 0.4;
+  min-width: 70px; /* Slightly increased min-width for better spacing */
+  white-space: nowrap; /* Prevent text wrapping */
+  flex-shrink: 0; /* Prevent the button from shrinking too much */
 }
 
 .ai-console-tab-button:last-child {
@@ -953,6 +1099,7 @@ export const consoleCSS = `
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0; /* Prevent icon from shrinking */
 }
 
 .ai-console-tab-icon svg {
@@ -963,6 +1110,7 @@ export const consoleCSS = `
 
 .ai-console-tab-label {
   display: inline-block;
+  flex-shrink: 0; /* Prevent label from shrinking */
 }
 
 .ai-console-tab-content {
@@ -1122,28 +1270,172 @@ export const consoleCSS = `
   color: var(--text-muted);
 }
 `;
+===== src/settings/validation.ts =====
 
-===== src/settings/settings.ts =====
-
-import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
-import type MyPlugin from '../../main';
+import { Notice } from 'obsidian'; // Added import for Notice
+import { SampleSettingTab } from './settings';
 import { providerFetchers, providerMetadata } from './providers/index';
-import { SecretsManager } from '../utils/secrets'; // Correct path
+import { ensureProviderConfigExists } from './utils'; // Fixed import
 
-export interface ProviderConfig {
-    model: string;
+export async function validateAllStoredSecrets(tab: SampleSettingTab): Promise<void> {
+    if (tab.isValidating) return;
+    tab.isValidating = true;
+    console.log("[Settings] Starting initial validation of all stored secrets...");
+
+    tab.workingProviders.clear();
+    tab.availableModels = {};
+
+    let storedKeys: string[] = [];
+    try {
+        storedKeys = await tab.secrets.listSecrets();
+        console.log("[Settings] Stored secret keys found:", storedKeys);
+    } catch (error) {
+        console.error("[Settings] Failed to list secrets during validation:", error);
+        tab.isValidating = false;
+        return;
+    }
+
+    let settingsChanged = false;
+
+    const validationPromises = Object.keys(providerMetadata).map(async (providerKey) => {
+        const meta = providerMetadata[providerKey];
+        const requiresApiKey = meta.requiresApiKey;
+        const hasStoredSecret = storedKeys.includes(providerKey);
+
+        ensureProviderConfigExists(tab, providerKey);
+
+        if (!requiresApiKey) {
+            tab.workingProviders.add(providerKey);
+            console.log(`[Settings] Added non-API-key provider: ${providerKey}`);
+            try {
+                const models = await fetchAvailableModels(tab, providerKey, undefined);
+                tab.availableModels[providerKey] = models;
+                if (models.length > 0) {
+                    const currentModel = tab.plugin.settings.providers[providerKey]?.model;
+                    if (!currentModel || !models.includes(currentModel)) {
+                        console.log(`[Settings] Resetting model for ${providerKey} to ${models[0]}`);
+                        tab.plugin.settings.providers[providerKey].model = models[0];
+                        settingsChanged = true;
+                    }
+                } else {
+                    console.warn(`[Settings] No models found for non-API-key provider: ${providerKey}`);
+                }
+            } catch (error) {
+                console.error(`[Settings] Error fetching models for non-API-key provider ${providerKey}:`, error);
+                tab.availableModels[providerKey] = [];
+            }
+            return;
+        }
+
+        if (hasStoredSecret) {
+            let apiKey: string | undefined;
+            try {
+                apiKey = await tab.secrets.getSecret(providerKey);
+            } catch (error) {
+                console.error(`[Settings] Failed to get secret for ${providerKey}:`, error);
+                return;
+            }
+
+            if (apiKey) {
+                console.log(`[Settings] Auto-validating stored secret for: ${providerKey}`);
+                try {
+                    const models = await fetchAvailableModels(tab, providerKey, apiKey);
+                    tab.availableModels[providerKey] = models;
+
+                    if (models.length > 0) {
+                        tab.workingProviders.add(providerKey);
+                        const currentModel = tab.plugin.settings.providers[providerKey]?.model;
+                        if (!currentModel || !models.includes(currentModel)) {
+                            console.log(`[Settings] Resetting model for ${providerKey} to ${models[0]}`);
+                            tab.plugin.settings.providers[providerKey].model = models[0];
+                            settingsChanged = true;
+                        }
+                        console.log(`[Settings] Auto-validation successful for: ${providerKey}`);
+                    } else {
+                        console.log(`[Settings] Auto-validation failed for stored secret: ${providerKey}. Needs manual re-validation.`);
+                    }
+                } catch (error) {
+                    console.error(`[Settings] Auto-validation model fetch error for ${providerKey}:`, error);
+                    tab.availableModels[providerKey] = [];
+                }
+            } else {
+                console.warn(`[Settings] Secret listed for ${providerKey} but getSecret returned undefined.`);
+                tab.availableModels[providerKey] = [];
+            }
+        } else {
+            console.log(`[Settings] No stored secret found for API key provider: ${providerKey}`);
+            tab.availableModels[providerKey] = [];
+        }
+    });
+
+    await Promise.all(validationPromises);
+
+    if (settingsChanged) {
+        await tab.plugin.saveSettings();
+    }
+
+    tab.isValidating = false;
+    tab.hasDoneInitialValidation = true;
+    console.log("[Settings] Finished initial validation. Working providers:", Array.from(tab.workingProviders));
+
+    tab.display();
 }
 
-export interface MyPluginSettings {
-    defaultProvider: string;
-    backupProvider: string;
-    providers: Record<string, ProviderConfig>;
-}
+export async function fetchAvailableModels(
+    tab: SampleSettingTab,
+    providerKey: string,
+    apiKey: string | undefined
+): Promise<string[]> {
+    const fetcher = providerFetchers[providerKey];
+    const meta = providerMetadata[providerKey];
 
-// Dynamically generate DEFAULT_SETTINGS.providers from providerMetadata
+    if (!meta) {
+        console.error(`[Settings] No metadata found for provider: ${providerKey}`);
+        return [];
+    }
+    if (meta.requiresApiKey && !apiKey) {
+        console.warn(`[Settings] fetchAvailableModels called for ${providerKey} which requires an API key, but none was provided.`);
+        return [];
+    }
+    if (!fetcher) {
+        new Notice(`Model fetching not implemented for provider: ${providerKey}`);
+        console.warn(`Model fetching not implemented for provider: ${providerKey}`);
+        return [];
+    }
+
+    try {
+        const models = await fetcher(apiKey || '', tab.plugin.app);
+        return Array.isArray(models) ? models : [];
+    } catch (err) {
+        console.error(`[${providerKey}] Model fetch error during fetchAvailableModels:`, err);
+        throw err;
+    }
+}
+===== src/settings/defaults.ts =====
+
+import { Category, ProviderConfig, MyPluginSettings } from './types';
+import { providerMetadata } from './providers/index';
+
+// Define supported providers per category
+export const categoryProviders: Record<Category, string[]> = {
+    text: ['openai', 'anthropic', 'groq', 'gemini', 'openrouter', 'grok', 'local'],
+    image: ['openai', 'stabilityai', 'grok'],
+    video: [], // No providers yet; placeholder for future
+    audio: [], // No providers yet
+    ocr: [], // No providers yet
+    '3d': ['stabilityai'] // Added 3D category with stabilityai as a provider
+};
+
+// Dynamically generate DEFAULT_SETTINGS
 export const DEFAULT_SETTINGS: MyPluginSettings = {
-    defaultProvider: 'openai', // Sensible default
-    backupProvider: '', // No default backup initially
+    categories: {
+        text: { defaultProvider: 'openai', backupProvider: '' },
+        image: { defaultProvider: 'openai', backupProvider: '' },
+        video: { defaultProvider: '', backupProvider: '' },
+        audio: { defaultProvider: '', backupProvider: '' },
+        ocr: { defaultProvider: '', backupProvider: '' },
+        '3d': { defaultProvider: '', backupProvider: '' } // Added 3D category
+    },
     providers: Object.keys(providerMetadata).reduce((acc, key) => {
         acc[key] = {
             model: providerMetadata[key].defaultModel
@@ -1151,561 +1443,126 @@ export const DEFAULT_SETTINGS: MyPluginSettings = {
         return acc;
     }, {} as Record<string, ProviderConfig>)
 };
+===== src/settings/settings.ts =====
+
+import { App, PluginSettingTab } from 'obsidian';
+import type MyPlugin from '../../main';
+import { SecretsManager } from '../utils/secrets';
+import { validateAllStoredSecrets } from './validation';
+import { renderCategoryTabs } from './components/CategoryTabs';
+import { renderProviderSelector } from './components/ProviderSelector';
+import { renderProviderConfig } from './components/ProviderConfig';
+import { ensureProviderConfigExists } from './utils';
+import { providerMetadata } from './providers/index';
+import { DEFAULT_SETTINGS } from './defaults';
 
 export class SampleSettingTab extends PluginSettingTab {
     plugin: MyPlugin;
-    secrets: SecretsManager; // Use the passed SecretsManager instance
+    secrets: SecretsManager;
     selectedProviderKey: string;
-    availableModels: Record<string, string[]> = {}; // Store models per provider
+    availableModels: Record<string, string[]> = {};
     workingProviders: Set<string> = new Set();
-    // Flag to prevent multiple concurrent validations on display
     isValidating: boolean = false;
-    // Flag to track if initial validation has run for this session
     hasDoneInitialValidation: boolean = false;
 
-
-    // Modified constructor to accept SecretsManager instance
     constructor(app: App, plugin: MyPlugin, secretsManager: SecretsManager) {
         super(app, plugin);
         this.plugin = plugin;
-        this.secrets = secretsManager; // Use the already initialized instance
+        this.secrets = secretsManager;
 
-        // Determine initial provider selection more robustly
-        const defaultProvider = plugin.settings.defaultProvider;
+        // Initialize selected provider
+        const firstCategory = 'text';
+        const defaultProvider = this.plugin.settings.categories[firstCategory].defaultProvider;
         if (defaultProvider && providerMetadata[defaultProvider]) {
-             this.selectedProviderKey = defaultProvider;
+            this.selectedProviderKey = defaultProvider;
         } else if (Object.keys(providerMetadata).length > 0) {
-            this.selectedProviderKey = Object.keys(providerMetadata)[0]; // Fallback to first known provider
+            this.selectedProviderKey = Object.keys(providerMetadata)[0];
         } else {
-             this.selectedProviderKey = ''; // Should not happen if providerMetadata is populated
+            this.selectedProviderKey = '';
         }
 
-        // Ensure config exists for the initially selected provider
         if (this.selectedProviderKey) {
-            this.ensureProviderConfigExists(this.selectedProviderKey);
+            ensureProviderConfigExists(this, this.selectedProviderKey);
         }
     }
 
-    /**
-     * Validates stored secrets for *all* providers on initial display.
-     * Populates workingProviders and availableModels.
-     */
-    private async validateAllStoredSecrets(): Promise<void> {
-        // Prevent re-entry if already validating
-        if (this.isValidating) return;
-        this.isValidating = true;
-        console.log("[Settings] Starting initial validation of all stored secrets...");
-
-        // Clear previous state
-        this.workingProviders.clear();
-        this.availableModels = {};
-
-        let storedKeys: string[] = [];
-        try {
-             storedKeys = await this.secrets.listSecrets();
-             console.log("[Settings] Stored secret keys found:", storedKeys);
-        } catch (error) {
-            console.error("[Settings] Failed to list secrets during validation:", error);
-            this.isValidating = false;
-            return; // Abort validation if listing fails
-        }
-
-        let settingsChanged = false; // Track if any model needed resetting
-
-        // Use Promise.all to run validations concurrently for faster loading
-        const validationPromises = Object.keys(providerMetadata).map(async (providerKey) => {
-            const meta = providerMetadata[providerKey];
-            const requiresApiKey = meta.requiresApiKey;
-            const hasStoredSecret = storedKeys.includes(providerKey);
-
-            // Ensure config exists before validation attempt
-            this.ensureProviderConfigExists(providerKey); // Safe to call multiple times
-
-            if (!requiresApiKey) {
-                // Providers that don't need a key are always considered "working"
-                this.workingProviders.add(providerKey);
-                console.log(`[Settings] Added non-API-key provider: ${providerKey}`);
-                try {
-                    // Fetch models even for local providers if possible
-                    const models = await this.fetchAvailableModels(providerKey, undefined);
-                    this.availableModels[providerKey] = models;
-                    if (models.length > 0) {
-                         const currentModel = this.plugin.settings.providers[providerKey]?.model;
-                         if (!currentModel || !models.includes(currentModel)) {
-                            console.log(`[Settings] Resetting model for ${providerKey} to ${models[0]}`);
-                            this.plugin.settings.providers[providerKey].model = models[0];
-                            settingsChanged = true;
-                         }
-                    } else {
-                        console.warn(`[Settings] No models found for non-API-key provider: ${providerKey}`);
-                    }
-                } catch (error) {
-                     console.error(`[Settings] Error fetching models for non-API-key provider ${providerKey}:`, error);
-                     this.availableModels[providerKey] = []; // Set empty models on error
-                }
-                return; // Skip further API key validation
-            }
-
-            // Handle providers requiring an API key
-            if (hasStoredSecret) {
-                let apiKey: string | undefined;
-                try {
-                    apiKey = await this.secrets.getSecret(providerKey);
-                } catch (error) {
-                    console.error(`[Settings] Failed to get secret for ${providerKey}:`, error);
-                    return; // Skip this provider if secret retrieval fails
-                }
-
-                if (apiKey) {
-                    console.log(`[Settings] Auto-validating stored secret for: ${providerKey}`);
-                    try {
-                        // Attempt to fetch models to validate the key implicitly
-                        const models = await this.fetchAvailableModels(providerKey, apiKey);
-                        this.availableModels[providerKey] = models; // Store fetched models
-
-                        if (models.length > 0) {
-                            this.workingProviders.add(providerKey);
-                            // Ensure the selected model is valid, reset if not
-                            const currentModel = this.plugin.settings.providers[providerKey]?.model;
-                            if (!currentModel || !models.includes(currentModel)) {
-                                console.log(`[Settings] Resetting model for ${providerKey} to ${models[0]}`);
-                                this.plugin.settings.providers[providerKey].model = models[0];
-                                settingsChanged = true;
-                            }
-                            console.log(`[Settings] Auto-validation successful for: ${providerKey}`);
-                        } else {
-                            // Validation failed (likely bad key or no models returned)
-                            console.log(`[Settings] Auto-validation failed for stored secret: ${providerKey}. Needs manual re-validation.`);
-                        }
-                    } catch (error) {
-                         // Catch errors during model fetching for this provider
-                         console.error(`[Settings] Auto-validation model fetch error for ${providerKey}:`, error);
-                         this.availableModels[providerKey] = []; // Ensure models are empty on error
-                    }
-                } else {
-                    // Should not happen if listSecrets includes it, but safeguard
-                    console.warn(`[Settings] Secret listed for ${providerKey} but getSecret returned undefined.`);
-                    this.availableModels[providerKey] = [];
-                }
-            } else {
-                console.log(`[Settings] No stored secret found for API key provider: ${providerKey}`);
-                this.availableModels[providerKey] = []; // No key, no models
-            }
-        });
-
-        // Wait for all validation attempts to complete
-        await Promise.all(validationPromises);
-
-        // Save settings if any models were reset
-        if (settingsChanged) {
-            await this.plugin.saveSettings();
-        }
-
-        this.isValidating = false;
-        this.hasDoneInitialValidation = true; // Mark initial validation as complete
-        console.log("[Settings] Finished initial validation. Working providers:", Array.from(this.workingProviders));
-
-        // Refresh the display now that validation is complete
-        this.display();
-    }
-
-    ensureProviderConfigExists(providerKey: string): ProviderConfig | undefined {
-        if (!providerKey) return undefined; // Handle empty key case
-
-        const meta = providerMetadata[providerKey];
-        if (!meta) {
-             console.error(`[Settings] No metadata found for provider key: ${providerKey}`);
-             return undefined; // No metadata, cannot create config
-        }
-
-        if (!this.plugin.settings.providers[providerKey]) {
-            this.plugin.settings.providers[providerKey] = {
-                model: meta.defaultModel
-            };
-            console.log(`[Settings] Added missing provider configuration for: ${providerKey}`);
-             // No need to save here, will be saved after validation or user action
-        }
-        return this.plugin.settings.providers[providerKey];
-    }
-
-    // display() method triggers validation only once on first load
     async display(): Promise<void> {
-         // Trigger the comprehensive validation only once when the tab is first displayed
-         if (!this.hasDoneInitialValidation && !this.isValidating) {
-            // Use setTimeout to allow the current display call to finish rendering
-            // the basic structure before starting the async validation.
-            // This prevents potential race conditions or UI freezes.
-            setTimeout(() => this.validateAllStoredSecrets(), 0);
-            // Render a basic loading state or just the structure for now
-         }
+        if (!this.hasDoneInitialValidation && !this.isValidating) {
+            setTimeout(() => validateAllStoredSecrets(this), 0);
+        }
 
         const { containerEl } = this;
-        containerEl.empty(); // Clear previous content
+        containerEl.empty();
 
         containerEl.createEl('h2', { text: 'LLM Provider Settings' });
 
-        // --- Default/Backup Provider Dropdowns ---
-        const createProviderDropdown = (setting: Setting, settingKey: 'defaultProvider' | 'backupProvider') => {
-            setting.addDropdown(dropdown => {
-                // Filter valid providers: must have metadata AND be in the workingProviders set
-                const validProviders = Object.keys(providerMetadata)
-                    .filter(id => this.workingProviders.has(id)); // Only show validated providers
-
-                dropdown.addOption('', '--- Select ---'); // Default empty option
-
-                if (validProviders.length === 0) {
-                    dropdown.addOption('', 'No validated providers available');
-                    dropdown.setDisabled(true);
-                } else {
-                    validProviders.forEach(id => dropdown.addOption(id, id)); // Add validated providers
-                    dropdown.setDisabled(false);
-                }
-
-                // Set current value, fallback to empty if current is invalid or not validated
-                const currentValue = this.plugin.settings[settingKey];
-                dropdown.setValue(validProviders.includes(currentValue) ? currentValue : '');
-
-                dropdown.onChange(async value => {
-                    const settingName = settingKey === 'defaultProvider' ? 'Default' : 'Backup';
-                    if (value === '') {
-                        new Notice(`Cleared ${settingName} Provider.`);
-                    } else {
-                        new Notice(`${settingName} provider set to ${value}`);
-                    }
-                    this.plugin.settings[settingKey] = value;
-                    await this.plugin.saveSettings();
-                    // Redraw needed if changing default affects selected provider display
-                    this.display();
-                });
-            });
-        };
-
-        const defaultProviderSetting = new Setting(containerEl)
-            .setName('Default Provider')
-            .setDesc('Primary provider (must be validated).');
-        createProviderDropdown(defaultProviderSetting, 'defaultProvider');
-
-        const backupProviderSetting = new Setting(containerEl)
-            .setName('Backup Provider')
-            .setDesc('Used if the default provider fails (must be validated).');
-        createProviderDropdown(backupProviderSetting, 'backupProvider');
-
+        // Render category tabs
+        renderCategoryTabs(this, containerEl);
 
         containerEl.createEl('h3', { text: 'Configure Providers' });
 
-        // --- Provider Selection Dropdown ---
-        new Setting(containerEl)
-            .setName('Select Provider to Configure')
-            .setDesc('Choose a provider to set its API key (if required) and model.')
-            .addDropdown(dropdown => {
-                Object.keys(providerMetadata).forEach(providerKey =>
-                    dropdown.addOption(providerKey, providerKey) // Add all known providers
-                );
+        // Render provider selection dropdown
+        renderProviderSelector(this, containerEl);
 
-                // Ensure selectedProviderKey is valid, fallback to first if not
-                if (!providerMetadata[this.selectedProviderKey]) {
-                    this.selectedProviderKey = Object.keys(providerMetadata)[0] || '';
-                }
-
-                dropdown.setValue(this.selectedProviderKey);
-
-                dropdown.onChange(value => {
-                    this.selectedProviderKey = value;
-                    // DON'T clear availableModels here - keep fetched data
-                    this.ensureProviderConfigExists(this.selectedProviderKey); // Ensure config exists
-                    this.display(); // Redraw settings for the new provider
-                });
-            });
-
-        // --- Configuration Section for Selected Provider ---
-        if (!this.selectedProviderKey || !providerMetadata[this.selectedProviderKey]) {
+        // Render configuration for selected provider
+        if (this.selectedProviderKey && providerMetadata[this.selectedProviderKey]) {
+            renderProviderConfig(this, containerEl);
+        } else {
             containerEl.createEl('p', { text: 'Please select a provider to configure.' });
-            return; // Stop rendering if no valid provider is selected
-        }
-
-        const selectedMeta = providerMetadata[this.selectedProviderKey];
-        const currentConfig = this.ensureProviderConfigExists(this.selectedProviderKey);
-        if (!currentConfig) {
-             // This should not happen if ensureProviderConfigExists works correctly
-            containerEl.createEl('p', { text: `Error: Configuration could not be created for ${this.selectedProviderKey}.` });
-            return;
-        }
-
-        containerEl.createEl('h4', { text: `Configure: ${selectedMeta.key}` });
-
-        // --- API Key Input + Validation Button ---
-        const apiKeySetting = new Setting(containerEl); // Create setting container
-        const requiresApiKey = selectedMeta.requiresApiKey;
-
-        apiKeySetting.setName(`${selectedMeta.key} API Key`)
-            .setDesc(requiresApiKey
-                ? `Enter/update key and click Validate.`
-                : `This provider does not require an API key.`);
-
-        let apiKeyInput: HTMLInputElement | null = null; // To hold reference to the input field
-
-        if (requiresApiKey) {
-            apiKeySetting.addText(text => {
-                apiKeyInput = text.inputEl; // Store reference
-                text.setPlaceholder('Enter API key here')
-                    .setValue('') // Always clear on display for security
-                    .onChange(async value => {
-                        // No action on change, wait for button click
-                    });
-                text.inputEl.type = 'password'; // Mask input
-                text.inputEl.style.width = '300px'; // Set width
-            });
-        }
-
-        // Add validation button (always add, but functionality differs)
-        apiKeySetting.addExtraButton(btn => {
-            btn.setIcon('refresh-ccw')
-                .setTooltip(requiresApiKey
-                    ? `Validate ${selectedMeta.key} key & fetch models`
-                    : 'Fetch available models (no API key needed)')
-                // .setDisabled(!requiresApiKey) // Enable even if no API key for fetching local models etc.
-                .onClick(async () => {
-                    let apiKeyToValidate: string | undefined = undefined;
-                    const currentProvider = this.selectedProviderKey; // Capture current provider
-
-                    if (requiresApiKey) {
-                        if (!apiKeyInput) return; // Should not happen
-                        apiKeyToValidate = apiKeyInput.value.trim(); // Get current value from input
-                        if (!apiKeyToValidate) {
-                            // If input is empty, try to re-validate the stored key
-                            apiKeyToValidate = await this.secrets.getSecret(currentProvider);
-                            if (!apiKeyToValidate) {
-                                new Notice(`API Key required for ${currentProvider}. Enter one or check storage.`, 5000);
-                                return;
-                            }
-                             new Notice(`Re-validating stored key for ${currentProvider}...`);
-                        } else {
-                            // User entered a new key, save it first
-                             new Notice(`Validating new key for ${currentProvider}...`);
-                             await this.secrets.setSecret(currentProvider, apiKeyToValidate);
-                             console.log(`[Settings] Saved new API key for ${currentProvider} before validation.`);
-                        }
-                    } else {
-                         new Notice(`Fetching models for ${currentProvider}...`);
-                    }
-
-
-                    btn.setDisabled(true); // Disable button during validation
-                    this.workingProviders.delete(currentProvider); // Assume invalid until proven otherwise
-
-                    try {
-                        // Fetch models using the key (either new or stored)
-                        const models = await this.fetchAvailableModels(currentProvider, apiKeyToValidate);
-                        this.availableModels[currentProvider] = models; // Update models for this provider
-
-                        if (models.length > 0) {
-                            this.workingProviders.add(currentProvider); // Mark as working
-                            new Notice(`${currentProvider}: ${models.length} model(s) found. ${requiresApiKey ? 'Key validated!' : 'Models fetched!'}`, 5000);
-
-                            // Ensure model selection is valid after fetching
-                            const config = this.ensureProviderConfigExists(currentProvider); // Get config again
-                            if (config && (!models.includes(config.model))) {
-                                config.model = models[0]; // Reset to first available model
-                                new Notice(`Model reset to ${models[0]} as previous was unavailable.`, 3000);
-                                await this.plugin.saveSettings(); // Save model change
-                            }
-                        } else {
-                            // Validation failed or no models found
-                            new Notice(`${currentProvider}: Validation failed. No models found${requiresApiKey ? ' or invalid API key' : ''}. Check console.`, 5000);
-                        }
-                    } catch (error) {
-                         // Catch errors from fetchAvailableModels or setSecret
-                         console.error(`[Settings] Manual validation error for ${currentProvider}:`, error);
-                         this.availableModels[currentProvider] = []; // Clear models on error
-                         new Notice(`${currentProvider}: Validation failed. ${error.message}`, 7000);
-                    } finally {
-                        btn.setDisabled(false); // Re-enable button
-                        this.display(); // Redraw to update status indicator and model list
-                    }
-                });
-
-             // --- Status Indicator ---
-             const statusContainer = btn.extraSettingsEl.createSpan({ cls: "setting-item-description" });
-             statusContainer.style.marginLeft = "10px"; // Add some space
-
-             // Use the current state determined by validateAllStoredSecrets or manual validation
-             if (this.workingProviders.has(this.selectedProviderKey)) {
-                 statusContainer.setText("✅ Valid");
-                 statusContainer.style.color = "green";
-             } else if (requiresApiKey) {
-                  // Check if a secret *exists* even if not validated yet/failed validation
-                  // Use secrets.getSecret which waits for loading
-                  this.secrets.getSecret(this.selectedProviderKey).then(storedKey => {
-                      // Check again inside the promise as display might have re-rendered
-                      if (this.selectedProviderKey === selectedMeta.key) {
-                           if (storedKey) {
-                               statusContainer.setText("❓ Validation Needed / Failed");
-                               statusContainer.style.color = "orange";
-                           } else {
-                               statusContainer.setText("❌ No Key Set");
-                               statusContainer.style.color = "red";
-                           }
-                      }
-                  }).catch(err => {
-                      console.error("Error checking secret for status:", err);
-                      statusContainer.setText("⚠️ Error checking key");
-                      statusContainer.style.color = "red";
-                  });
-             } else {
-                 // Doesn't require API key, status depends if models were fetched
-                 if (this.availableModels[this.selectedProviderKey]?.length > 0) {
-                      statusContainer.setText("✅ Models Fetched");
-                      statusContainer.style.color = "green";
-                 } else {
-                      statusContainer.setText("❓ Fetch Models"); // Prompt to fetch local models
-                      statusContainer.style.color = "orange";
-                 }
-             }
-        });
-
-
-        // --- Model Selection Dropdown ---
-        const modelSetting = new Setting(containerEl)
-            .setName(`${selectedMeta.key} Model`)
-            .setDesc(`Select the model for ${selectedMeta.key}. (List updated after validation)`);
-
-        modelSetting.addDropdown(dropdown => {
-            // Get models specific to the currently selected provider
-            const modelOptions = this.availableModels[this.selectedProviderKey] ?? [];
-
-            // Use default model from metadata as a fallback if no models fetched yet
-            const defaultModel = selectedMeta.defaultModel;
-            let optionsToShow = [...modelOptions]; // Copy fetched models
-
-            // Ensure the currently selected model is in the list, add if necessary
-            const currentSelectedModel = currentConfig.model;
-            if (currentSelectedModel && !optionsToShow.includes(currentSelectedModel)) {
-                 optionsToShow.push(currentSelectedModel); // Add it temporarily if not fetched
-            }
-            // Ensure the default model is in the list if nothing else is
-            if (optionsToShow.length === 0 && defaultModel) {
-                 optionsToShow.push(defaultModel);
-            }
-
-            // Sort options for consistent display
-            optionsToShow.sort();
-
-
-            if (optionsToShow.length === 0) {
-                dropdown.addOption('', 'No models available (Validate key/Fetch first)');
-                dropdown.setDisabled(true);
-            } else {
-                optionsToShow.forEach(m => dropdown.addOption(m, m));
-                dropdown.setDisabled(false);
-            }
-
-            // Set current value, ensuring it exists in the options, fallback to first option
-            dropdown.setValue(optionsToShow.includes(currentSelectedModel) ? currentSelectedModel : optionsToShow[0] || '');
-
-            dropdown.onChange(async value => {
-                currentConfig.model = value;
-                await this.plugin.saveSettings();
-                new Notice(`${selectedMeta.key} model set to ${value}`);
-            });
-        });
-
-        // --- Display Fetched Models (if available) ---
-        const currentModels = this.availableModels[this.selectedProviderKey] ?? [];
-        if (currentModels.length > 0) {
-            const detailsEl = containerEl.createEl('details');
-            detailsEl.createEl('summary', { text: `View ${currentModels.length} Available Models` });
-            const listEl = detailsEl.createEl('ul', { cls: 'provider-model-list' });
-            // Limit displayed models for brevity if list is very long
-            const modelsToShow = currentModels.slice(0, 25);
-            modelsToShow.forEach(model => {
-                listEl.createEl('li', { text: model });
-            });
-            if (currentModels.length > 25) {
-                 listEl.createEl('li', { text: `... and ${currentModels.length - 25} more.` });
-            }
-        }
-
-        // --- Remove Configuration Button ---
-        // Show if a secret exists for this provider
-        this.secrets.getSecret(this.selectedProviderKey).then(storedKey => {
-             // Check provider again inside promise
-             if (this.selectedProviderKey === selectedMeta.key && storedKey) {
-                 new Setting(containerEl)
-                     .setName(`Remove ${selectedMeta.key} API Key`)
-                     .setDesc(`Removes the stored API key for ${selectedMeta.key}. The model selection will be kept.`)
-                     .addButton(btn => {
-                         btn.setButtonText('Remove Key')
-                             .setIcon('trash')
-                             .setWarning() // Use warning style for destructive action
-                             .onClick(async () => {
-                                 const providerToDelete = this.selectedProviderKey; // Capture key
-                                 new Notice(`Removing API key for ${providerToDelete}...`);
-
-                                 // Delete secret
-                                 await this.secrets.deleteSecret(providerToDelete);
-
-                                 // Remove from working providers and clear models for this provider
-                                 this.workingProviders.delete(providerToDelete);
-                                 this.availableModels[providerToDelete] = [];
-
-                                 // Keep the provider config in settings (don't reset model)
-                                 // Reset default/backup if needed
-                                 if (this.plugin.settings.defaultProvider === providerToDelete) {
-                                     this.plugin.settings.defaultProvider = '';
-                                     new Notice('Default provider cleared as its key was removed.', 3000);
-                                 }
-                                 if (this.plugin.settings.backupProvider === providerToDelete) {
-                                     this.plugin.settings.backupProvider = '';
-                                      new Notice('Backup provider cleared as its key was removed.', 3000);
-                                 }
-
-                                 // Save settings changes (default/backup provider)
-                                 await this.plugin.saveSettings();
-                                 new Notice(`${providerToDelete} API key removed.`);
-
-                                 // Refresh display
-                                 this.display();
-                             });
-                     });
-             }
-        }).catch(err => console.error("Error checking secret for remove button:", err));
-
-    }
-
-    // fetchAvailableModels - Added error handling consistency
-    async fetchAvailableModels(providerKey: string, apiKey: string | undefined): Promise<string[]> {
-        const fetcher = providerFetchers[providerKey];
-        const meta = providerMetadata[providerKey];
-
-        if (!meta) {
-             console.error(`[Settings] No metadata found for provider: ${providerKey}`);
-             return []; // No metadata for provider
-        }
-        if (meta.requiresApiKey && !apiKey) {
-             // This case is handled by the calling logic (validation button / auto-validation)
-             // which should not call fetch if key is required but missing.
-             // If called anyway, log and return empty.
-             console.warn(`[Settings] fetchAvailableModels called for ${providerKey} which requires an API key, but none was provided.`);
-             return [];
-        }
-        if (!fetcher) {
-            // Notice is okay here as it's an explicit action/validation failure
-            new Notice(`Model fetching not implemented for provider: ${providerKey}`);
-            console.warn(`Model fetching not implemented for provider: ${providerKey}`);
-            return [];
-        }
-
-        try {
-            // Pass apiKey even if potentially undefined; fetcher should handle it (like for 'local')
-            const models = await fetcher(apiKey || '', this.plugin.app); // Pass empty string if undefined/null
-            // Ensure result is always an array
-             return Array.isArray(models) ? models : [];
-        } catch (err) {
-            console.error(`[${providerKey}] Model fetch error during fetchAvailableModels:`, err);
-            // Don't show Notice here, let the calling logic (validation button / auto-validation) handle UI feedback
-             throw err; // Re-throw error so validation knows it failed and can show appropriate notice
         }
     }
+}
+===== src/settings/utils.ts =====
+
+import { SampleSettingTab } from './settings';
+import { providerMetadata } from './providers/index';
+import { ProviderConfig } from './types';
+
+export function ensureProviderConfigExists(tab: SampleSettingTab, providerKey: string): ProviderConfig | undefined {
+    if (!providerKey) return undefined;
+
+    const meta = providerMetadata[providerKey];
+    if (!meta) {
+        console.error(`[Settings] No metadata found for provider key: ${providerKey}`);
+        return undefined;
+    }
+
+    if (!tab.plugin.settings.providers[providerKey]) {
+        tab.plugin.settings.providers[providerKey] = {
+            model: meta.defaultModel
+        };
+        console.log(`[Settings] Added missing provider configuration for: ${providerKey}`);
+    }
+    return tab.plugin.settings.providers[providerKey];
+}
+
+export function getTabIcon(category: string): string {
+    const tabIcons: Record<string, string> = {
+        text: 'text',
+        image: 'image',
+        video: 'video',
+        audio: 'volume-2',
+        ocr: 'scan',
+        '3d': 'cube'
+    };
+    return tabIcons[category] || 'circle';
+}
+===== src/settings/types.ts =====
+
+export type Category = 'text' | 'image' | 'video' | 'audio' | 'ocr' | '3d';
+
+export interface ProviderConfig {
+    model: string;
+}
+
+export interface CategorySettings {
+    defaultProvider: string;
+    backupProvider: string;
+}
+
+export interface MyPluginSettings {
+    categories: Record<Category, CategorySettings>;
+    providers: Record<string, ProviderConfig>;
 }
 ===== src/settings/providers/anthropic.ts =====
 
@@ -1815,6 +1672,217 @@ export async function fetchOpenAIModels(apiKey: string): Promise<string[]> {
 		console.error('[OpenAI] Model fetch error:', err);
 		throw err;
 	}
+}
+===== src/settings/providers/stabilityai.ts =====
+
+import { requestUrl } from 'obsidian';
+
+interface StabilityAIEngine {
+    id: string;
+    name: string;
+    description: string;
+    type: string;
+}
+
+interface ModelInfo {
+    id: string;
+    languages: string[];
+}
+
+interface CategorizedModels {
+    Media: ModelInfo[];
+    Language: ModelInfo[];
+    '3D': ModelInfo[];
+    Audio: ModelInfo[];
+}
+
+// Fallback list of models with categories and languages, based on the provided table
+const fallbackModels: CategorizedModels = {
+    Media: [
+        { id: 'stable-diffusion-3-5-medium', languages: ['English'] },
+        { id: 'stable-diffusion-3-5-large', languages: ['English'] },
+        { id: 'stable-diffusion-3-5-large-turbo', languages: ['English'] },
+        { id: 'stable-diffusion-3-medium', languages: ['English'] },
+        { id: 'stable-diffusion-xl-turbo', languages: ['English'] },
+        { id: 'stable-diffusion-turbo', languages: ['English'] },
+        { id: 'stable-video-diffusion-14-frame', languages: ['English'] },
+        { id: 'stable-video-diffusion-25-frame', languages: ['English'] },
+        { id: 'stable-video-diffusion-1-1', languages: ['English'] },
+        { id: 'japanese-sdxl', languages: ['Japanese'] },
+        { id: 'japanese-stable-clip', languages: ['Japanese'] },
+        // Include V1 models seen in previous API response
+        { id: 'stable-diffusion-v1-6', languages: ['English'] },
+        { id: 'stable-diffusion-xl-1024-v1-0', languages: ['English'] }
+    ],
+    Language: [
+        { id: 'stable-lm-2-12b', languages: ['English', 'Spanish', 'German', 'Italian', 'French', 'Portuguese', 'Dutch'] },
+        { id: 'stable-lm-2-1-6b', languages: ['English', 'Spanish', 'German', 'Italian', 'French', 'Portuguese', 'Dutch'] },
+        { id: 'stable-lm-zephyr-3b', languages: ['English'] },
+        { id: 'japanese-stable-lm-2-1-6b', languages: ['Japanese'] },
+        { id: 'japanese-stable-vlm', languages: ['Japanese'] },
+        { id: 'stable-code-instruct-3b', languages: ['English', 'Code'] },
+        { id: 'stable-code-3b', languages: ['English', 'Code'] }
+    ],
+    '3D': [
+        { id: 'stable-point-aware-3d', languages: ['English'] },
+        { id: 'stable-fast-3d', languages: ['English'] },
+        { id: 'stable-zero123c', languages: ['English'] },
+        { id: 'stable-video-3d', languages: ['English'] }
+    ],
+    Audio: [
+        { id: 'stable-audio-open-1-0', languages: ['English'] }
+    ]
+};
+
+// Function to map API engine types to plugin categories
+function mapEngineTypeToCategory(engineType: string, engineId: string): keyof CategorizedModels {
+    // Map based on engine type and ID patterns
+    if (engineType === 'PICTURE' || engineType === 'VIDEO' || engineId.includes('video-diffusion') || engineId.includes('sdxl') || engineId.includes('stable-diffusion')) {
+        return 'Media';
+    } else if (engineType === 'AUDIO' || engineId.includes('audio')) {
+        return 'Audio';
+    } else if (engineType === '3D' || engineId.includes('3d')) {
+        return '3D';
+    } else if (engineType === 'TEXT' || engineId.includes('lm') || engineId.includes('code')) {
+        return 'Language';
+    }
+    // Default to Media for unknown types, as most Stability AI models are image-related
+    return 'Media';
+}
+
+// Helper to merge fetched models with fallback models, avoiding duplicates
+function mergeModels(fetched: CategorizedModels, fallback: CategorizedModels): CategorizedModels {
+    const result: CategorizedModels = { Media: [], Language: [], '3D': [], Audio: [] };
+    const categories: (keyof CategorizedModels)[] = ['Media', 'Language', '3D', 'Audio'];
+
+    for (const category of categories) {
+        const fetchedIds = new Set(fetched[category].map(model => model.id));
+        const merged = [...fetched[category]];
+
+        // Add fallback models that weren't fetched
+        for (const fallbackModel of fallback[category]) {
+            if (!fetchedIds.has(fallbackModel.id)) {
+                merged.push(fallbackModel);
+            }
+        }
+
+        // Sort models by ID for consistency
+        result[category] = merged.sort((a, b) => a.id.localeCompare(b.id));
+    }
+
+    return result;
+}
+
+export async function fetchStabilityAIModels(apiKey: string): Promise<string[]> {
+    const categorizedModels: CategorizedModels = {
+        Media: [],
+        Language: [],
+        '3D': [],
+        Audio: []
+    };
+    let lastError: Error | null = null;
+
+    // Try multiple API versions to fetch models
+    const apiVersions = ['v1', 'v1beta'];
+    for (const apiVersion of apiVersions) {
+        const url = `https://api.stability.ai/${apiVersion}/engines/list`;
+        console.log('[StabilityAI] Sending request:', {
+            url,
+            headers: {
+                Authorization: '[REDACTED]',
+                'Stability-Client-ID': 'obsidian-ai-plugin',
+                'Stability-Client-Version': '1.0.0'
+            }
+        });
+
+        try {
+            const response = await requestUrl({
+                url,
+                method: 'GET',
+                headers: {
+                    Authorization: `Bearer ${apiKey.trim()}`,
+                    'Content-Type': 'application/json',
+                    'Stability-Client-ID': 'obsidian-ai-plugin',
+                    'Stability-Client-Version': '1.0.0'
+                    // Uncomment and set the Organization header if needed
+                    // 'Organization': 'org-123456'
+                }
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `Stability AI error (${apiVersion}): ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.log('[StabilityAI] Error response body:', errorBody);
+                    errorMessage += ` - ${errorBody}`;
+                    if (response.status === 401) {
+                        errorMessage += '. Invalid API key.';
+                    } else if (response.status === 500) {
+                        errorMessage += '. Server error occurred.';
+                    }
+                } catch {
+                    errorMessage += ' - Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+
+            const data = response.json as StabilityAIEngine[];
+            if (!Array.isArray(data)) {
+                console.error('[StabilityAI] Unexpected response format:', data);
+                throw new Error('Unexpected API response format');
+            }
+
+            // Categorize fetched models
+            for (const engine of data) {
+                const category = mapEngineTypeToCategory(engine.type, engine.id);
+                // Assume English as the default language unless specified in fallback
+                const modelInfo: ModelInfo = { id: engine.id, languages: ['English'] };
+                // Update languages if the model is in the fallback list
+                for (const cat of Object.keys(fallbackModels) as (keyof CategorizedModels)[]) {
+                    const fallbackModel = fallbackModels[cat].find(m => m.id === engine.id);
+                    if (fallbackModel) {
+                        modelInfo.languages = fallbackModel.languages;
+                        break;
+                    }
+                }
+                categorizedModels[category].push(modelInfo);
+            }
+
+            console.log(`[StabilityAI] Fetched models from ${apiVersion}:`, categorizedModels);
+        } catch (err) {
+            console.error(`[StabilityAI] Error for API version ${apiVersion}:`, err);
+            lastError = err;
+            continue;
+        }
+    }
+
+    // Merge with fallback models to ensure all models from the table are included
+    const finalModels = mergeModels(categorizedModels, fallbackModels);
+
+    // Log the final categorized models
+    console.log('[StabilityAI] Final categorized model list:', finalModels);
+
+    // For compatibility with the current plugin, return a flat list of all model IDs
+    // The settings redesign can use the categorized structure directly
+    const flatModelList = [
+        ...finalModels.Media,
+        ...finalModels.Language,
+        ...finalModels['3D'],
+        ...finalModels.Audio
+    ].map(model => model.id).sort();
+
+    if (flatModelList.length === 0) {
+        throw lastError || new Error('Failed to fetch models with all API versions and no fallback available');
+    }
+
+    return flatModelList;
+}
+
+// Export the categorized models for use in the settings redesign
+export function getCategorizedStabilityAIModels(): CategorizedModels {
+    // This assumes fetchStabilityAIModels has been called and cached the results
+    // For now, return the fallback models; in a real implementation, you'd cache the fetched results
+    return fallbackModels;
 }
 ===== src/settings/providers/groq.ts =====
 
@@ -2018,39 +2086,380 @@ import { App } from 'obsidian';
 import { fetchOpenAIModels } from './openai';
 import { fetchLocalModels } from './local';
 import { fetchAnthropicModels } from './anthropic';
-import { fetchGroqModels } from './groq'; // Assuming first groq file is correct
+import { fetchGroqModels } from './groq';
 import { fetchGeminiModels } from './gemini';
 import { fetchOpenRouterModels } from './openrouter';
-import { fetchGrokModels } from './grok'; // Assuming second grok file (x.ai) is correct
+import { fetchGrokModels } from './grok';
+import { fetchStabilityAIModels } from './stabilityai'; // Added Stability AI fetcher
 
 export interface ProviderMetadata {
-	key: string;
-	defaultModel: string;
-	requiresApiKey: boolean;
+    key: string;
+    defaultModel: string;
+    requiresApiKey: boolean;
 }
 
 export const providerMetadata: Record<string, ProviderMetadata> = {
-	openai: { key: 'openai', defaultModel: 'gpt-3.5-turbo', requiresApiKey: true },
-	local: { key: 'local', defaultModel: 'llama2', requiresApiKey: false }, // Ollama
-	anthropic: { key: 'anthropic', defaultModel: 'claude-3-opus-20240229', requiresApiKey: true },
-	groq: { key: 'groq', defaultModel: 'mixtral-8x7b-32768', requiresApiKey: true }, // GroqCloud
-	gemini: { key: 'gemini', defaultModel: 'models/gemini-pro', requiresApiKey: true }, // Google Gemini
-	openrouter: { key: 'openrouter', defaultModel: 'openrouter/google/gemma-7b-it', requiresApiKey: true },
-	grok: { key: 'grok', defaultModel: 'grok-1', requiresApiKey: true } // x.ai Grok
+    openai: { key: 'openai', defaultModel: 'gpt-3.5-turbo', requiresApiKey: true },
+    local: { key: 'local', defaultModel: 'llama2', requiresApiKey: false }, // Ollama
+    anthropic: { key: 'anthropic', defaultModel: 'claude-3-opus-20240229', requiresApiKey: true },
+    groq: { key: 'groq', defaultModel: 'mixtral-8x7b-32768', requiresApiKey: true }, // GroqCloud
+    gemini: { key: 'gemini', defaultModel: 'models/gemini-pro', requiresApiKey: true }, // Google Gemini
+    openrouter: { key: 'openrouter', defaultModel: 'openrouter/google/gemma-7b-it', requiresApiKey: true },
+    grok: { key: 'grok', defaultModel: 'grok-1', requiresApiKey: true }, // x.ai Grok
+    stabilityai: { key: 'stabilityai', defaultModel: 'stable-diffusion-xl-v1', requiresApiKey: true } // Stability AI
 };
 
 // Updated FetchFunction type to accept optional apiKey and app
 type FetchFunction = (apiKey: string, app?: App) => Promise<string[]>;
 
 export const providerFetchers: Record<string, FetchFunction> = {
-  openai: fetchOpenAIModels,
-  local: fetchLocalModels, // fetchLocalModels now fits the signature (implicitly)
-  anthropic: fetchAnthropicModels,
-  groq: fetchGroqModels, // GroqCloud fetcher
-  gemini: fetchGeminiModels,
-  openrouter: fetchOpenRouterModels,
-  grok: fetchGrokModels // x.ai Grok fetcher
+    openai: fetchOpenAIModels,
+    local: fetchLocalModels,
+    anthropic: fetchAnthropicModels,
+    groq: fetchGroqModels,
+    gemini: fetchGeminiModels,
+    openrouter: fetchOpenRouterModels,
+    grok: fetchGrokModels,
+    stabilityai: fetchStabilityAIModels // Added Stability AI fetcher
 };
+===== src/settings/components/ProviderSelector.ts =====
+
+import { SampleSettingTab } from '../settings';
+import { providerMetadata } from '../providers/index';
+import { ensureProviderConfigExists } from '../utils';
+import { Setting } from 'obsidian';
+
+export function renderProviderSelector(tab: SampleSettingTab, containerEl: HTMLElement): void {
+    new Setting(containerEl)
+        .setName('Select Provider to Configure')
+        .setDesc('Choose a provider to set its API key (if required) and model.')
+        .addDropdown(dropdown => {
+            Object.keys(providerMetadata).forEach(providerKey =>
+                dropdown.addOption(providerKey, providerKey)
+            );
+
+            if (!providerMetadata[tab.selectedProviderKey]) {
+                tab.selectedProviderKey = Object.keys(providerMetadata)[0] || '';
+            }
+
+            dropdown.setValue(tab.selectedProviderKey);
+
+            dropdown.onChange(value => {
+                tab.selectedProviderKey = value;
+                ensureProviderConfigExists(tab, tab.selectedProviderKey);
+                tab.display();
+            });
+        });
+}
+===== src/settings/components/CategoryTabs.ts =====
+
+import { SampleSettingTab } from '../settings';
+import { categoryProviders } from '../defaults';
+import { TabComponent, TabConfig } from '../../ui/components/TabComponent';
+import { getTabIcon } from '../utils';
+import { Setting, Notice } from 'obsidian';
+import { Category } from '../types';
+
+export function renderCategoryTabs(tab: SampleSettingTab, containerEl: HTMLElement): void {
+    const tabs: TabConfig[] = Object.keys(categoryProviders).map(category => ({
+        tab: {
+            id: category,
+            name: category.charAt(0).toUpperCase() + category.slice(1),
+            render: (tabContainer: HTMLElement) => renderCategoryTab(tab, tabContainer, category as Category),
+            cleanup: () => {} // No cleanup needed for static settings
+        },
+        icon: getTabIcon(category)
+    }));
+
+    const tabComponent = new TabComponent(tab.app, tabs, 'text');
+    const tabContainer = containerEl.createEl('div', { cls: 'category-tabs' });
+    tabComponent.render(tabContainer);
+}
+
+function renderCategoryTab(tab: SampleSettingTab, container: HTMLElement, category: Category) {
+    const catSettings = tab.plugin.settings.categories[category] || {
+        defaultProvider: '',
+        backupProvider: ''
+    };
+
+    // Create settings for default and backup providers
+    const createProviderDropdown = (setting: Setting, settingKey: 'defaultProvider' | 'backupProvider') => {
+        setting.addDropdown(dropdown => {
+            const validProviders = categoryProviders[category]
+                .filter(id => tab.workingProviders.has(id));
+
+            dropdown.addOption('', '--- Select ---');
+
+            if (validProviders.length === 0) {
+                dropdown.addOption('', 'No validated providers available');
+                dropdown.setDisabled(true);
+            } else {
+                validProviders.forEach(id => dropdown.addOption(id, id));
+                dropdown.setDisabled(false);
+            }
+
+            const currentValue = catSettings[settingKey];
+            dropdown.setValue(validProviders.includes(currentValue) ? currentValue : '');
+
+            dropdown.onChange(async value => {
+                const settingName = settingKey === 'defaultProvider' ? 'Default' : 'Backup';
+                if (value === '') {
+                    new Notice(`Cleared ${settingName} Provider for ${category}.`);
+                } else {
+                    new Notice(`${settingName} provider for ${category} set to ${value}`);
+                }
+                catSettings[settingKey] = value;
+                await tab.plugin.saveSettings();
+            });
+        });
+    };
+
+    const defaultProviderSetting = new Setting(container)
+        .setName(`Default Provider for ${category}`)
+        .setDesc(`Primary provider for ${category} (must be validated).`);
+    createProviderDropdown(defaultProviderSetting, 'defaultProvider');
+
+    const backupProviderSetting = new Setting(container)
+        .setName(`Backup Provider for ${category}`)
+        .setDesc(`Used if the default provider for ${category} fails (must be validated).`);
+    createProviderDropdown(backupProviderSetting, 'backupProvider');
+}
+===== src/settings/components/ProviderConfig.ts =====
+
+import { SampleSettingTab } from '../settings';
+import { providerMetadata, providerFetchers } from '../providers/index';
+import { ensureProviderConfigExists } from '../utils';
+import { fetchAvailableModels } from '../validation'; // Fixed import
+import { Setting, Notice } from 'obsidian';
+import { renderRemoveKeyButton } from './RemoveKeyButton';
+
+export function renderProviderConfig(tab: SampleSettingTab, containerEl: HTMLElement): void {
+    const selectedMeta = providerMetadata[tab.selectedProviderKey];
+    const currentConfig = ensureProviderConfigExists(tab, tab.selectedProviderKey);
+    if (!currentConfig) {
+        containerEl.createEl('p', { text: `Error: Configuration could not be created for ${tab.selectedProviderKey}.` });
+        return;
+    }
+
+    containerEl.createEl('h4', { text: `Configure: ${selectedMeta.key}` });
+
+    // --- API Key Input + Validation Button ---
+    const apiKeySetting = new Setting(containerEl);
+    const requiresApiKey = selectedMeta.requiresApiKey;
+
+    apiKeySetting.setName(`${selectedMeta.key} API Key`)
+        .setDesc(requiresApiKey
+            ? `Enter/update key and click Validate.`
+            : `This provider does not require an API key.`);
+
+    let apiKeyInput: HTMLInputElement | null = null;
+
+    if (requiresApiKey) {
+        apiKeySetting.addText(text => {
+            apiKeyInput = text.inputEl;
+            text.setPlaceholder('Enter API key here')
+                .setValue('')
+                .onChange(async value => {});
+            text.inputEl.type = 'password';
+            text.inputEl.style.width = '300px';
+        });
+    }
+
+    apiKeySetting.addExtraButton(btn => {
+        btn.setIcon('refresh-ccw')
+            .setTooltip(requiresApiKey
+                ? `Validate ${selectedMeta.key} key & fetch models`
+                : 'Fetch available models (no API key needed)')
+            .onClick(async () => {
+                let apiKeyToValidate: string | undefined = undefined;
+                const currentProvider = tab.selectedProviderKey;
+
+                if (requiresApiKey) {
+                    if (!apiKeyInput) return;
+                    apiKeyToValidate = apiKeyInput.value.trim();
+                    if (!apiKeyToValidate) {
+                        apiKeyToValidate = await tab.secrets.getSecret(currentProvider);
+                        if (!apiKeyToValidate) {
+                            new Notice(`API Key required for ${currentProvider}. Enter one or check storage.`, 5000);
+                            return;
+                        }
+                        new Notice(`Re-validating stored key for ${currentProvider}...`);
+                    } else {
+                        new Notice(`Validating new key for ${currentProvider}...`);
+                        await tab.secrets.setSecret(currentProvider, apiKeyToValidate);
+                        console.log(`[Settings] Saved new API key for ${currentProvider} before validation.`);
+                    }
+                } else {
+                    new Notice(`Fetching models for ${currentProvider}...`);
+                }
+
+                btn.setDisabled(true);
+                tab.workingProviders.delete(currentProvider);
+
+                try {
+                    const models = await fetchAvailableModels(tab, currentProvider, apiKeyToValidate);
+                    tab.availableModels[currentProvider] = models;
+
+                    if (models.length > 0) {
+                        tab.workingProviders.add(currentProvider);
+                        new Notice(`${currentProvider}: ${models.length} model(s) found. ${requiresApiKey ? 'Key validated!' : 'Models fetched!'}`, 5000);
+
+                        const config = ensureProviderConfigExists(tab, currentProvider);
+                        if (config && (!models.includes(config.model))) {
+                            config.model = models[0];
+                            new Notice(`Model reset to ${models[0]} as previous was unavailable.`, 3000);
+                            await tab.plugin.saveSettings();
+                        }
+                    } else {
+                        new Notice(`${currentProvider}: Validation failed. No models found${requiresApiKey ? ' or invalid API key' : ''}. Check console.`, 5000);
+                    }
+                } catch (error) {
+                    console.error(`[Settings] Manual validation error for ${currentProvider}:`, error);
+                    tab.availableModels[currentProvider] = [];
+                    new Notice(`${currentProvider}: Validation failed. ${error.message}`, 7000);
+                } finally {
+                    btn.setDisabled(false);
+                    tab.display();
+                }
+            });
+
+        const statusContainer = btn.extraSettingsEl.createSpan({ cls: "setting-item-description" });
+        statusContainer.style.marginLeft = "10px";
+
+        if (tab.workingProviders.has(tab.selectedProviderKey)) {
+            statusContainer.setText("✅ Valid");
+            statusContainer.style.color = "green";
+        } else if (requiresApiKey) {
+            tab.secrets.getSecret(tab.selectedProviderKey).then(storedKey => {
+                if (tab.selectedProviderKey === selectedMeta.key) {
+                    if (storedKey) {
+                        statusContainer.setText("❓ Validation Needed / Failed");
+                        statusContainer.style.color = "orange";
+                    } else {
+                        statusContainer.setText("❌ No Key Set");
+                        statusContainer.style.color = "red";
+                    }
+                }
+            }).catch(err => {
+                console.error("Error checking secret for status:", err);
+                statusContainer.setText("⚠️ Error checking key");
+                statusContainer.style.color = "red";
+            });
+        } else {
+            if (tab.availableModels[tab.selectedProviderKey]?.length > 0) {
+                statusContainer.setText("✅ Models Fetched");
+                statusContainer.style.color = "green";
+            } else {
+                statusContainer.setText("❓ Fetch Models");
+                statusContainer.style.color = "orange";
+            }
+        }
+    });
+
+    // --- Model Selection Dropdown ---
+    const modelSetting = new Setting(containerEl)
+        .setName(`${selectedMeta.key} Model`)
+        .setDesc(`Select the model for ${selectedMeta.key}. (List updated after validation)`);
+
+    modelSetting.addDropdown(dropdown => {
+        const modelOptions = tab.availableModels[tab.selectedProviderKey] ?? [];
+        const defaultModel = selectedMeta.defaultModel;
+        let optionsToShow = [...modelOptions];
+
+        const currentSelectedModel = currentConfig.model;
+        if (currentSelectedModel && !optionsToShow.includes(currentSelectedModel)) {
+            optionsToShow.push(currentSelectedModel);
+        }
+        if (optionsToShow.length === 0 && defaultModel) {
+            optionsToShow.push(defaultModel);
+        }
+
+        optionsToShow.sort();
+
+        if (optionsToShow.length === 0) {
+            dropdown.addOption('', 'No models available (Validate key/Fetch first)');
+            dropdown.setDisabled(true);
+        } else {
+            optionsToShow.forEach(m => dropdown.addOption(m, m));
+            dropdown.setDisabled(false);
+        }
+
+        dropdown.setValue(optionsToShow.includes(currentSelectedModel) ? currentSelectedModel : optionsToShow[0] || '');
+
+        dropdown.onChange(async value => {
+            currentConfig.model = value;
+            await tab.plugin.saveSettings();
+            new Notice(`${selectedMeta.key} model set to ${value}`);
+        });
+    });
+
+    // --- Display Fetched Models ---
+    const currentModels = tab.availableModels[tab.selectedProviderKey] ?? [];
+    if (currentModels.length > 0) {
+        const detailsEl = containerEl.createEl('details');
+        detailsEl.createEl('summary', { text: `View ${currentModels.length} Available Models` });
+        const listEl = detailsEl.createEl('ul', { cls: 'provider-model-list' });
+        const modelsToShow = currentModels.slice(0, 25);
+        modelsToShow.forEach(model => {
+            listEl.createEl('li', { text: model });
+        });
+        if (currentModels.length > 25) {
+            listEl.createEl('li', { text: `... and ${currentModels.length - 25} more.` });
+        }
+    }
+
+    // --- Remove Configuration Button ---
+    renderRemoveKeyButton(tab, containerEl);
+}
+===== src/settings/components/RemoveKeyButton.ts =====
+
+import { SampleSettingTab } from '../settings';
+import { providerMetadata } from '../providers/index';
+import { Setting, Notice } from 'obsidian';
+import { Category } from '../types';
+
+export function renderRemoveKeyButton(tab: SampleSettingTab, containerEl: HTMLElement): void {
+    tab.secrets.getSecret(tab.selectedProviderKey).then(storedKey => {
+        const selectedMeta = providerMetadata[tab.selectedProviderKey];
+        if (tab.selectedProviderKey === selectedMeta.key && storedKey) {
+            new Setting(containerEl)
+                .setName(`Remove ${selectedMeta.key} API Key`)
+                .setDesc(`Removes the stored API key for ${selectedMeta.key}. The model selection will be kept.`)
+                .addButton(btn => {
+                    btn.setButtonText('Remove Key')
+                        .setIcon('trash')
+                        .setWarning()
+                        .onClick(async () => {
+                            const providerToDelete = tab.selectedProviderKey;
+                            new Notice(`Removing API key for ${providerToDelete}...`);
+
+                            await tab.secrets.deleteSecret(providerToDelete);
+
+                            tab.workingProviders.delete(providerToDelete);
+                            tab.availableModels[providerToDelete] = [];
+
+                            // Reset default/backup providers for affected categories
+                            Object.keys(tab.plugin.settings.categories).forEach(category => {
+                                const catSettings = tab.plugin.settings.categories[category as Category];
+                                if (catSettings.defaultProvider === providerToDelete) {
+                                    catSettings.defaultProvider = '';
+                                    new Notice(`Default provider for ${category} cleared as its key was removed.`, 3000);
+                                }
+                                if (catSettings.backupProvider === providerToDelete) {
+                                    catSettings.backupProvider = '';
+                                    new Notice(`Backup provider for ${category} cleared as its key was removed.`, 3000);
+                                }
+                            });
+
+                            await tab.plugin.saveSettings();
+                            new Notice(`${providerToDelete} API key removed.`);
+
+                            tab.display();
+                        });
+                });
+        }
+    }).catch(err => console.error("Error checking secret for remove button:", err));
+}
 ===== src/core/Adapter.ts =====
 
 // src/core/Adapter.ts
@@ -3140,7 +3549,7 @@ export class AnthropicAdapter implements LLMAdapter {
 ===== src/gateways/TextGateway.ts =====
 
 import type { SecretsManager } from '../utils/secrets';
-import type { MyPluginSettings } from '../settings/settings';
+import type { MyPluginSettings } from '../settings/types';
 import { providerMetadata } from '../settings/providers/index';
 import type { LLMAdapter, LLMRequest } from '../core/Adapter';
 import { OpenAIAdapter } from '../adapters/text/OpenAIAdapter';
@@ -3148,7 +3557,7 @@ import { AnthropicAdapter } from '../adapters/text/AnthropicAdapter';
 import { GrokAdapter } from '../adapters/text/GrokAdapter';
 import { OpenRouterAdapter } from '../adapters/text/OpenRouterAdapter';
 import { GeminiAdapter } from '../adapters/text/GeminiAdapter';
-import { GroqAdapter } from '../adapters/text/GroqAdapter'; // Added import for GroqAdapter
+import { GroqAdapter } from '../adapters/text/GroqAdapter';
 
 export class TextGateway {
   private adapters: Record<string, LLMAdapter> = {};
@@ -3164,8 +3573,8 @@ export class TextGateway {
     settings: MyPluginSettings
   ): Promise<TextGateway> {
     const gw = new TextGateway(
-      settings.defaultProvider,
-      settings.backupProvider
+      settings.categories.text.defaultProvider,
+      settings.categories.text.backupProvider
     );
 
     for (const key of Object.keys(settings.providers)) {
@@ -3199,7 +3608,7 @@ export class TextGateway {
         case 'gemini':
           adapter = new GeminiAdapter(apiKey!, model);
           break;
-        case 'groq': // Added case for groq provider
+        case 'groq':
           adapter = new GroqAdapter(apiKey!, model);
           break;
         default:
@@ -3246,6 +3655,9 @@ export class TextGateway {
 
 
 ===== src/gateways/SpeechGateway.ts =====
+
+
+===== src/gateways/ThreeDGateway.ts =====
 
 
 ===== src/api/aiNNS.ts =====
