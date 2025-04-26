@@ -204,8 +204,7 @@ import { ImageConsoleTab } from './tabs/ImageConsoleTab';
 import { VideoConsoleTab } from './tabs/VideoConsoleTab';
 import { AudioConsoleTab } from './tabs/AudioConsoleTab';
 import { OcrConsoleTab } from './tabs/OcrConsoleTab';
-// Add the import for console.css
-import './styles/console.css';
+import { consoleCSS } from './styles/consoleStyles'; // 🔥 Make sure your build supports this
 
 interface PromptHistoryEntry {
   provider: string;
@@ -220,7 +219,7 @@ interface ConsoleTab {
   name: string;
   render(container: HTMLElement): void;
   cleanup(): void;
-  renderHistory?(history: PromptHistoryEntry[]): void; // Optional method for tabs that support history
+  renderHistory?(history: PromptHistoryEntry[]): void;
 }
 
 export class AiConsoleModal extends Modal {
@@ -255,11 +254,11 @@ export class AiConsoleModal extends Modal {
     this.contentEl.empty();
     this.container = this.contentEl.createEl('div', { cls: 'ai-console-container' });
 
-    // Dynamically add the stylesheet to the document
-    const styleEl = document.createElement('style');
-    document.head.appendChild(styleEl);
+    // 🔥 Inject CSS as string into <head>
+    const style = document.createElement('style');
+    style.textContent = consoleCSS;
+    document.head.appendChild(style);
 
-    // Render active tab content (includes tab selector)
     this.renderActiveTab();
   }
 
@@ -270,47 +269,34 @@ export class AiConsoleModal extends Modal {
 
   private renderActiveTab() {
     this.container.empty();
-  
-    // ─── ICON NAMES FOR EACH TAB ─────────────────────────────
+
     const tabIcons: Record<string, string> = {
-      text: 'file-text',
+      text: 'text',
       image: 'image',
       video: 'video',
       audio: 'volume-2',
       ocr: 'scan'
     };
-  
-    // ─── TAB SELECTOR WRAPPER ────────────────────────────────
-    const tabSelector = this.container.createEl('div', {
-      cls: 'ai-console-tab-selector'
-    });
-    console.log('[AiConsoleModal] Tab selector created with class:', tabSelector.className);
-  
-    // ─── ONE BUTTON PER TAB ───────────────────────────────────
+
+    const tabSelector = this.container.createEl('div', { cls: 'ai-console-tab-selector' });
+
     this.tabs.forEach(tab => {
       const isActive = tab.id === this.activeTab;
       const tabButton = tabSelector.createEl('button', {
         cls: `ai-console-tab-button${isActive ? ' active' : ''}`
       });
-      console.log(`[AiConsoleModal] Tab button created for ${tab.id} with class:`, tabButton.className);
-  
-      // 1) Icon element — Use Obsidian's setIcon to render the icon
+
       const iconName = tabIcons[tab.id];
       if (iconName) {
         const iconEl = tabButton.createEl('span', { cls: 'ai-console-tab-icon' });
-        setIcon(iconEl, iconName); // Obsidian's method to set the icon
+        setIcon(iconEl, iconName);
       }
-  
-      // 2) Short label
+
       tabButton.createSpan({ cls: 'ai-console-tab-label', text: tab.name.split(' ')[0] });
-  
       tabButton.addEventListener('click', () => this.switchTab(tab.id));
     });
-  
-    // ─── CONTENT PANEL ────────────────────────────────────────
-    const content = this.container.createEl('div', {
-      cls: 'ai-console-tab-content'
-    });
+
+    const content = this.container.createEl('div', { cls: 'ai-console-tab-content' });
     const active = this.tabs.find(t => t.id === this.activeTab);
     if (active) active.render(content);
   }
@@ -336,6 +322,7 @@ export class AiConsoleModal extends Modal {
     console.log('[AiConsoleModal] Modal closed.');
   }
 }
+
 ===== src/ui/console/tabs/ImageConsoleTab.ts =====
 
 // src/ui/console/tabs/ImageConsoleTab.ts
@@ -447,74 +434,76 @@ export class TextConsoleTab {
     this.promptHistory.render(container, this.historyClickHandler.bind(this));
   }
 
-  private async runPrompt() {
-    console.log('[TextConsoleTab] Run button clicked.');
-    const provider = this.providerSelector.getSelectedProvider();
-    const model = this.providerSelector.getSelectedModel() || this.settings.providers[provider]?.model || '';
-    const prompt = this.promptInput.getPrompt().trim();
-    const temperature = this.parameterControls.getTemperature();
-    const maxTokens = this.parameterControls.getMaxTokens();
+  // src/ui/console/tabs/TextConsoleTab.ts
+private async runPrompt() {
+  console.log('[TextConsoleTab] Run button clicked.');
+  const provider = this.providerSelector.getSelectedProvider();
+  const model = this.providerSelector.getSelectedModel() || this.settings.providers[provider]?.model || '';
+  const prompt = this.promptInput.getPrompt().trim();
+  const temperature = this.parameterControls.getTemperature();
+  const maxTokens = this.parameterControls.getMaxTokens();
 
-    this.outputViewer.clear();
+  this.outputViewer.clear();
 
-    if (!prompt) {
-      new Notice('Please enter a prompt.');
-      return;
-    }
-    if (!provider) {
-      new Notice('Please select a provider.');
-      return;
-    }
-    if (!this.textGateway) {
-      new Notice('TextGateway not initialized. Cannot generate response.');
-      this.outputViewer.setOutput('Error: TextGateway not initialized.');
-      return;
-    }
+  if (!prompt) {
+    new Notice('Please enter a prompt.');
+    return;
+  }
+  if (!provider) {
+    new Notice('Please select a provider.');
+    return;
+  }
+  if (!this.textGateway) {
+    new Notice('TextGateway not initialized. Cannot generate response.');
+    this.outputViewer.setOutput('Error: TextGateway not initialized.');
+    return;
+  }
+
+  // Changed: Use getAdapterForProvider instead of direct adapters access
+  const adapter = await this.textGateway.getAdapterForProvider(provider);
+  if (!adapter) {
+    new Notice(`No adapter found for provider: ${provider}. Please check configuration.`);
+    this.outputViewer.setOutput(`Error: No adapter for ${provider}.`);
+    console.error('[TextConsoleTab] No adapter found for provider:', provider);
+    return;
+  }
+
+  try {
+    this.outputViewer.setOutput('Generating...');
+    console.log('[TextConsoleTab] Testing provider:', provider, 'with request:', {
+      prompt: prompt.length > 50 ? prompt.slice(0, 50) + '...' : prompt,
+      model,
+      temperature,
+      maxTokens,
+    });
 
     const request: LLMRequest = { prompt, model, temperature, maxTokens };
-    const adapter = (this.textGateway as any).adapters[provider];
-    if (!adapter) {
-      new Notice(`No adapter found for provider: ${provider}. Please check configuration.`);
-      this.outputViewer.setOutput(`Error: No adapter for ${provider}.`);
-      console.error('[TextConsoleTab] No adapter found for provider:', provider);
-      return;
+    const result: LLMResponse = await adapter.generate(request);
+    let output = '[No result returned]';
+    let tokensUsed = 0;
+
+    if (result && typeof result.output === 'string') {
+      output = result.output.trim();
+      tokensUsed = result.tokensUsed || 0;
+    } else {
+      console.warn('[TextConsoleTab] Unexpected response format from provider:', provider, result);
+      output = '[Unexpected response format]';
     }
 
-    try {
-      this.outputViewer.setOutput('Generating...');
-      console.log('[TextConsoleTab] Testing provider:', provider, 'with request:', {
-        prompt: prompt.length > 50 ? prompt.slice(0, 50) + '...' : prompt,
-        model,
-        temperature,
-        maxTokens,
-      });
-
-      const result: LLMResponse = await adapter.generate(request);
-      let output = '[No result returned]';
-      let tokensUsed = 0;
-
-      if (result && typeof result.output === 'string') {
-        output = result.output.trim();
-        tokensUsed = result.tokensUsed || 0;
-      } else {
-        console.warn('[TextConsoleTab] Unexpected response format from provider:', provider, result);
-        output = '[Unexpected response format]';
-      }
-
-      this.outputViewer.setOutput(output);
-      this.outputViewer.setCode(`await window.aiNNS.text.generate("${prompt.replace(/"/g, '\\"')}", { model: "${model}", temperature: ${temperature}, maxTokens: ${maxTokens} });`);
-      this.addToHistory({ provider, model, prompt, output, timestamp: new Date().toLocaleString() });
-      console.log('[TextConsoleTab] Response received for', provider, ':', {
-        output: output.length > 50 ? output.slice(0, 50) + '...' : output,
-        tokensUsed,
-      });
-    } catch (error: any) {
-      console.error('[TextConsoleTab] Generation error for', provider, ':', error);
-      let errorMessage = `Error: ${error.message || 'Unknown error'}`;
-      this.outputViewer.setOutput(errorMessage);
-      new Notice(`Failed to generate with ${provider}: ${error.message || 'Unknown error'}`);
-    }
+    this.outputViewer.setOutput(output);
+    this.outputViewer.setCode(`await window.aiNNS.text.generate("${prompt.replace(/"/g, '\\"')}", { model: "${model}", temperature: ${temperature}, maxTokens: ${maxTokens} });`);
+    this.addToHistory({ provider, model, prompt, output, timestamp: new Date().toLocaleString() });
+    console.log('[TextConsoleTab] Response received for', provider, ':', {
+      output: output.length > 50 ? output.slice(0, 50) + '...' : output,
+      tokensUsed,
+    });
+  } catch (error: any) {
+    console.error('[TextConsoleTab] Generation error for', provider, ':', error);
+    let errorMessage = `Error: ${error.message || 'Unknown error'}`;
+    this.outputViewer.setOutput(errorMessage);
+    new Notice(`Failed to generate with ${provider}: ${error.message || 'Unknown error'}`);
   }
+}
 
   private historyClickHandler(entry: PromptHistoryEntry) {
     this.providerSelector.setProvider(entry.provider, entry.model);
@@ -672,6 +661,8 @@ export class ProviderSelector {
     const controlsSection = container.createEl('div', { cls: 'ai-console-controls' });
     controlsSection.createEl('h3', { text: 'Settings' });
 
+    this.providers = [];
+
     try {
       for (const key of Object.keys(this.settings.providers)) {
         const meta = providerMetadata[key];
@@ -708,13 +699,18 @@ export class ProviderSelector {
         }
       });
 
-    new Setting(controlsSection)
+      const modelSetting = new Setting(controlsSection)
       .setName('Model')
-      .setDesc('Select the model for the selected provider.')
-      .addDropdown(dropdown => {
-        this.modelSelectEl = dropdown.selectEl;
-        dropdown.setDisabled(this.providers.length === 0);
-      });
+      .setDesc('Select the model for the selected provider.');
+    
+    modelSetting.controlEl.style.flexDirection = 'column';
+    modelSetting.controlEl.style.alignItems = 'stretch';
+    
+    modelSetting.addDropdown(dropdown => {
+      this.modelSelectEl = dropdown.selectEl;
+      this.modelSelectEl.style.width = '100%'; // ⬅️ make dropdown full width
+      dropdown.setDisabled(this.providers.length === 0);
+    });
 
     if (this.providers.length > 0) {
       try {
@@ -891,8 +887,9 @@ export class PromptInput {
   }
 }
 
-===== src/ui/console/styles/console.css =====
+===== src/ui/console/styles/consoleStyles.ts =====
 
+export const consoleCSS = `
 .ai-console-container {
   padding: 20px;
   max-width: 900px;
@@ -902,62 +899,56 @@ export class PromptInput {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
 }
 
-/* ─── TAB SELECTOR WRAPPER ───────────────────────────────────────── */
 .ai-console-tab-selector {
   display: flex;
-  gap: 0; /* Remove gap to make tabs touch each other */
+  gap: 0;
   margin-bottom: 0;
-  background: #2F2F2F; /* Dark background for the tab bar */
+  background: #2F2F2F;
   padding: 0;
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-/* ─── INDIVIDUAL TAB BUTTON ──────────────────────────────────────── */
 .ai-console-tab-button {
   display: flex;
   align-items: center;
-  gap: 6px; /* Space between icon and text */
+  gap: 6px;
   padding: 8px 16px;
   border: none;
-  border-right: 1px solid var(--background-modifier-border); /* Separator between tabs */
-  background: #2F2F2F; /* Match the selector background */
-  color: var(--text-faint); /* Faint color for unselected tabs */
+  border-right: 1px solid var(--background-modifier-border);
+  background: #2F2F2F;
+  color: var(--text-faint);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.2s ease;
   position: relative;
-  flex: 1; /* Make tabs take equal width */
+  flex: 1;
   text-align: center;
   justify-content: center;
-  opacity: 0.4; /* More pronounced fading for unselected tabs */
+  opacity: 0.4;
 }
 
-/* Last tab doesn't need a right border */
 .ai-console-tab-button:last-child {
   border-right: none;
 }
 
-/* Hover effect */
 .ai-console-tab-button:hover:not(.active) {
-  background: #3A3A3A; /* Slightly lighter on hover */
-  color: var(--text-muted); /* Slightly brighter on hover */
-  opacity: 0.6; /* Slightly less faded on hover */
+  background: #3A3A3A;
+  color: var(--text-muted);
+  opacity: 0.6;
 }
 
-/* ─── ACTIVE TAB ─────────────────────────────────────────────────── */
 .ai-console-tab-button.active {
-  background: var(--background-primary); /* Match content background */
-  color: var(--text-normal); /* Bright text for active tab */
+  background: var(--background-primary);
+  color: var(--text-normal);
   border-top-left-radius: 6px;
   border-top-right-radius: 6px;
-  border-bottom: none; /* Remove bottom border to connect with content */
+  border-bottom: none;
   position: relative;
-  z-index: 1; /* Ensure active tab is above the content border */
-  opacity: 1; /* Fully opaque for active tab */
+  z-index: 1;
+  opacity: 1;
 }
 
-/* Ensure Obsidian renders the icon with the correct size */
 .ai-console-tab-icon {
   width: 16px;
   height: 16px;
@@ -966,28 +957,24 @@ export class PromptInput {
   justify-content: center;
 }
 
-/* Ensure the SVG inside the icon inherits the color and opacity */
 .ai-console-tab-icon svg {
   fill: currentColor;
   stroke: currentColor;
-  opacity: inherit; /* Ensure the icon follows the button's opacity */
+  opacity: inherit;
 }
 
-/* Style for the label to ensure consistent spacing */
 .ai-console-tab-label {
   display: inline-block;
 }
 
-/* ─── TAB CONTENT AREA ───────────────────────────────────────────── */
 .ai-console-tab-content {
   padding: 16px;
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
-  border-top: none; /* Remove top border to connect with active tab */
+  border-top: none;
   border-radius: 0 0 6px 6px;
 }
 
-/* Rest of the existing styles remain unchanged */
 .ai-console-controls {
   margin-bottom: 20px;
   padding: 15px;
@@ -1136,590 +1123,510 @@ export class PromptInput {
 .ai-console-history-list span {
   color: var(--text-muted);
 }
+`;
+
 ===== src/settings/settings.ts =====
 
 import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
 import type MyPlugin from '../../main';
-import { providerFetchers, providerMetadata } from './providers/index';
-import { SecretsManager } from '../utils/secrets'; // Correct path
+import { TextTab } from './tabs/TextTab';
+import { ImageTab } from './tabs/ImageTab';
+import { VideoTab } from './tabs/VideoTab';
+import { AudioTab } from './tabs/AudioTab';
+import { OcrTab } from './tabs/OcrTab';
+import { PROVIDERS, ProviderMetadata } from './providerConfig';
 
-export interface ProviderConfig {
-    model: string;
-}
 
 export interface MyPluginSettings {
     defaultProvider: string;
     backupProvider: string;
-    providers: Record<string, ProviderConfig>;
-}
-
-// Dynamically generate DEFAULT_SETTINGS.providers from providerMetadata
+    providers: Record<string, { model: string; apiKey?: string }>;
+  }
+  
+  // Default values for when plugin is first installed
 export const DEFAULT_SETTINGS: MyPluginSettings = {
-    defaultProvider: 'openai', // Sensible default
-    backupProvider: '', // No default backup initially
-    providers: Object.keys(providerMetadata).reduce((acc, key) => {
-        acc[key] = {
-            model: providerMetadata[key].defaultModel
-        };
-        return acc;
-    }, {} as Record<string, ProviderConfig>)
-};
+    defaultProvider: '',
+    backupProvider: '',
+    providers: {}
+  };
 
 export class SampleSettingTab extends PluginSettingTab {
-    plugin: MyPlugin;
-    secrets: SecretsManager; // Use the passed SecretsManager instance
-    selectedProviderKey: string;
-    availableModels: Record<string, string[]> = {}; // Store models per provider
-    workingProviders: Set<string> = new Set();
-    // Flag to prevent multiple concurrent validations on display
-    isValidating: boolean = false;
-    // Flag to track if initial validation has run for this session
-    hasDoneInitialValidation: boolean = false;
-
-
-    // Modified constructor to accept SecretsManager instance
-    constructor(app: App, plugin: MyPlugin, secretsManager: SecretsManager) {
-        super(app, plugin);
-        this.plugin = plugin;
-        this.secrets = secretsManager; // Use the already initialized instance
-
-        // Determine initial provider selection more robustly
-        const defaultProvider = plugin.settings.defaultProvider;
-        if (defaultProvider && providerMetadata[defaultProvider]) {
-             this.selectedProviderKey = defaultProvider;
-        } else if (Object.keys(providerMetadata).length > 0) {
-            this.selectedProviderKey = Object.keys(providerMetadata)[0]; // Fallback to first known provider
-        } else {
-             this.selectedProviderKey = ''; // Should not happen if providerMetadata is populated
-        }
-
-        // Ensure config exists for the initially selected provider
-        if (this.selectedProviderKey) {
-            this.ensureProviderConfigExists(this.selectedProviderKey);
-        }
-    }
-
-    /**
-     * Validates stored secrets for *all* providers on initial display.
-     * Populates workingProviders and availableModels.
-     */
-    private async validateAllStoredSecrets(): Promise<void> {
-        // Prevent re-entry if already validating
-        if (this.isValidating) return;
-        this.isValidating = true;
-        console.log("[Settings] Starting initial validation of all stored secrets...");
-
-        // Clear previous state
-        this.workingProviders.clear();
-        this.availableModels = {};
-
-        let storedKeys: string[] = [];
-        try {
-             storedKeys = await this.secrets.listSecrets();
-             console.log("[Settings] Stored secret keys found:", storedKeys);
-        } catch (error) {
-            console.error("[Settings] Failed to list secrets during validation:", error);
-            this.isValidating = false;
-            return; // Abort validation if listing fails
-        }
-
-        let settingsChanged = false; // Track if any model needed resetting
-
-        // Use Promise.all to run validations concurrently for faster loading
-        const validationPromises = Object.keys(providerMetadata).map(async (providerKey) => {
-            const meta = providerMetadata[providerKey];
-            const requiresApiKey = meta.requiresApiKey;
-            const hasStoredSecret = storedKeys.includes(providerKey);
-
-            // Ensure config exists before validation attempt
-            this.ensureProviderConfigExists(providerKey); // Safe to call multiple times
-
-            if (!requiresApiKey) {
-                // Providers that don't need a key are always considered "working"
-                this.workingProviders.add(providerKey);
-                console.log(`[Settings] Added non-API-key provider: ${providerKey}`);
-                try {
-                    // Fetch models even for local providers if possible
-                    const models = await this.fetchAvailableModels(providerKey, undefined);
-                    this.availableModels[providerKey] = models;
-                    if (models.length > 0) {
-                         const currentModel = this.plugin.settings.providers[providerKey]?.model;
-                         if (!currentModel || !models.includes(currentModel)) {
-                            console.log(`[Settings] Resetting model for ${providerKey} to ${models[0]}`);
-                            this.plugin.settings.providers[providerKey].model = models[0];
-                            settingsChanged = true;
-                         }
-                    } else {
-                        console.warn(`[Settings] No models found for non-API-key provider: ${providerKey}`);
-                    }
-                } catch (error) {
-                     console.error(`[Settings] Error fetching models for non-API-key provider ${providerKey}:`, error);
-                     this.availableModels[providerKey] = []; // Set empty models on error
-                }
-                return; // Skip further API key validation
-            }
-
-            // Handle providers requiring an API key
-            if (hasStoredSecret) {
-                let apiKey: string | undefined;
-                try {
-                    apiKey = await this.secrets.getSecret(providerKey);
-                } catch (error) {
-                    console.error(`[Settings] Failed to get secret for ${providerKey}:`, error);
-                    return; // Skip this provider if secret retrieval fails
-                }
-
-                if (apiKey) {
-                    console.log(`[Settings] Auto-validating stored secret for: ${providerKey}`);
-                    try {
-                        // Attempt to fetch models to validate the key implicitly
-                        const models = await this.fetchAvailableModels(providerKey, apiKey);
-                        this.availableModels[providerKey] = models; // Store fetched models
-
-                        if (models.length > 0) {
-                            this.workingProviders.add(providerKey);
-                            // Ensure the selected model is valid, reset if not
-                            const currentModel = this.plugin.settings.providers[providerKey]?.model;
-                            if (!currentModel || !models.includes(currentModel)) {
-                                console.log(`[Settings] Resetting model for ${providerKey} to ${models[0]}`);
-                                this.plugin.settings.providers[providerKey].model = models[0];
-                                settingsChanged = true;
-                            }
-                            console.log(`[Settings] Auto-validation successful for: ${providerKey}`);
-                        } else {
-                            // Validation failed (likely bad key or no models returned)
-                            console.log(`[Settings] Auto-validation failed for stored secret: ${providerKey}. Needs manual re-validation.`);
-                        }
-                    } catch (error) {
-                         // Catch errors during model fetching for this provider
-                         console.error(`[Settings] Auto-validation model fetch error for ${providerKey}:`, error);
-                         this.availableModels[providerKey] = []; // Ensure models are empty on error
-                    }
-                } else {
-                    // Should not happen if listSecrets includes it, but safeguard
-                    console.warn(`[Settings] Secret listed for ${providerKey} but getSecret returned undefined.`);
-                    this.availableModels[providerKey] = [];
-                }
-            } else {
-                console.log(`[Settings] No stored secret found for API key provider: ${providerKey}`);
-                this.availableModels[providerKey] = []; // No key, no models
-            }
-        });
-
-        // Wait for all validation attempts to complete
-        await Promise.all(validationPromises);
-
-        // Save settings if any models were reset
-        if (settingsChanged) {
-            await this.plugin.saveSettings();
-        }
-
-        this.isValidating = false;
-        this.hasDoneInitialValidation = true; // Mark initial validation as complete
-        console.log("[Settings] Finished initial validation. Working providers:", Array.from(this.workingProviders));
-
-        // Refresh the display now that validation is complete
-        this.display();
-    }
-
-    ensureProviderConfigExists(providerKey: string): ProviderConfig | undefined {
-        if (!providerKey) return undefined; // Handle empty key case
-
-        const meta = providerMetadata[providerKey];
-        if (!meta) {
-             console.error(`[Settings] No metadata found for provider key: ${providerKey}`);
-             return undefined; // No metadata, cannot create config
-        }
-
-        if (!this.plugin.settings.providers[providerKey]) {
-            this.plugin.settings.providers[providerKey] = {
-                model: meta.defaultModel
-            };
-            console.log(`[Settings] Added missing provider configuration for: ${providerKey}`);
-             // No need to save here, will be saved after validation or user action
-        }
-        return this.plugin.settings.providers[providerKey];
-    }
-
-    // display() method triggers validation only once on first load
-    async display(): Promise<void> {
-         // Trigger the comprehensive validation only once when the tab is first displayed
-         if (!this.hasDoneInitialValidation && !this.isValidating) {
-            // Use setTimeout to allow the current display call to finish rendering
-            // the basic structure before starting the async validation.
-            // This prevents potential race conditions or UI freezes.
-            setTimeout(() => this.validateAllStoredSecrets(), 0);
-            // Render a basic loading state or just the structure for now
-         }
-
-        const { containerEl } = this;
-        containerEl.empty(); // Clear previous content
-
-        containerEl.createEl('h2', { text: 'LLM Provider Settings' });
-
-        // --- Default/Backup Provider Dropdowns ---
-        const createProviderDropdown = (setting: Setting, settingKey: 'defaultProvider' | 'backupProvider') => {
-            setting.addDropdown(dropdown => {
-                // Filter valid providers: must have metadata AND be in the workingProviders set
-                const validProviders = Object.keys(providerMetadata)
-                    .filter(id => this.workingProviders.has(id)); // Only show validated providers
-
-                dropdown.addOption('', '--- Select ---'); // Default empty option
-
-                if (validProviders.length === 0) {
-                    dropdown.addOption('', 'No validated providers available');
-                    dropdown.setDisabled(true);
-                } else {
-                    validProviders.forEach(id => dropdown.addOption(id, id)); // Add validated providers
-                    dropdown.setDisabled(false);
-                }
-
-                // Set current value, fallback to empty if current is invalid or not validated
-                const currentValue = this.plugin.settings[settingKey];
-                dropdown.setValue(validProviders.includes(currentValue) ? currentValue : '');
-
-                dropdown.onChange(async value => {
-                    const settingName = settingKey === 'defaultProvider' ? 'Default' : 'Backup';
-                    if (value === '') {
-                        new Notice(`Cleared ${settingName} Provider.`);
-                    } else {
-                        new Notice(`${settingName} provider set to ${value}`);
-                    }
-                    this.plugin.settings[settingKey] = value;
-                    await this.plugin.saveSettings();
-                    // Redraw needed if changing default affects selected provider display
-                    this.display();
-                });
-            });
-        };
-
-        const defaultProviderSetting = new Setting(containerEl)
-            .setName('Default Provider')
-            .setDesc('Primary provider (must be validated).');
-        createProviderDropdown(defaultProviderSetting, 'defaultProvider');
-
-        const backupProviderSetting = new Setting(containerEl)
-            .setName('Backup Provider')
-            .setDesc('Used if the default provider fails (must be validated).');
-        createProviderDropdown(backupProviderSetting, 'backupProvider');
-
-
-        containerEl.createEl('h3', { text: 'Configure Providers' });
-
-        // --- Provider Selection Dropdown ---
-        new Setting(containerEl)
-            .setName('Select Provider to Configure')
-            .setDesc('Choose a provider to set its API key (if required) and model.')
-            .addDropdown(dropdown => {
-                Object.keys(providerMetadata).forEach(providerKey =>
-                    dropdown.addOption(providerKey, providerKey) // Add all known providers
-                );
-
-                // Ensure selectedProviderKey is valid, fallback to first if not
-                if (!providerMetadata[this.selectedProviderKey]) {
-                    this.selectedProviderKey = Object.keys(providerMetadata)[0] || '';
-                }
-
-                dropdown.setValue(this.selectedProviderKey);
-
-                dropdown.onChange(value => {
-                    this.selectedProviderKey = value;
-                    // DON'T clear availableModels here - keep fetched data
-                    this.ensureProviderConfigExists(this.selectedProviderKey); // Ensure config exists
-                    this.display(); // Redraw settings for the new provider
-                });
-            });
-
-        // --- Configuration Section for Selected Provider ---
-        if (!this.selectedProviderKey || !providerMetadata[this.selectedProviderKey]) {
-            containerEl.createEl('p', { text: 'Please select a provider to configure.' });
-            return; // Stop rendering if no valid provider is selected
-        }
-
-        const selectedMeta = providerMetadata[this.selectedProviderKey];
-        const currentConfig = this.ensureProviderConfigExists(this.selectedProviderKey);
-        if (!currentConfig) {
-             // This should not happen if ensureProviderConfigExists works correctly
-            containerEl.createEl('p', { text: `Error: Configuration could not be created for ${this.selectedProviderKey}.` });
-            return;
-        }
-
-        containerEl.createEl('h4', { text: `Configure: ${selectedMeta.key}` });
-
-        // --- API Key Input + Validation Button ---
-        const apiKeySetting = new Setting(containerEl); // Create setting container
-        const requiresApiKey = selectedMeta.requiresApiKey;
-
-        apiKeySetting.setName(`${selectedMeta.key} API Key`)
-            .setDesc(requiresApiKey
-                ? `Enter/update key and click Validate.`
-                : `This provider does not require an API key.`);
-
-        let apiKeyInput: HTMLInputElement | null = null; // To hold reference to the input field
-
-        if (requiresApiKey) {
-            apiKeySetting.addText(text => {
-                apiKeyInput = text.inputEl; // Store reference
-                text.setPlaceholder('Enter API key here')
-                    .setValue('') // Always clear on display for security
-                    .onChange(async value => {
-                        // No action on change, wait for button click
-                    });
-                text.inputEl.type = 'password'; // Mask input
-                text.inputEl.style.width = '300px'; // Set width
-            });
-        }
-
-        // Add validation button (always add, but functionality differs)
-        apiKeySetting.addExtraButton(btn => {
-            btn.setIcon('refresh-ccw')
-                .setTooltip(requiresApiKey
-                    ? `Validate ${selectedMeta.key} key & fetch models`
-                    : 'Fetch available models (no API key needed)')
-                // .setDisabled(!requiresApiKey) // Enable even if no API key for fetching local models etc.
-                .onClick(async () => {
-                    let apiKeyToValidate: string | undefined = undefined;
-                    const currentProvider = this.selectedProviderKey; // Capture current provider
-
-                    if (requiresApiKey) {
-                        if (!apiKeyInput) return; // Should not happen
-                        apiKeyToValidate = apiKeyInput.value.trim(); // Get current value from input
-                        if (!apiKeyToValidate) {
-                            // If input is empty, try to re-validate the stored key
-                            apiKeyToValidate = await this.secrets.getSecret(currentProvider);
-                            if (!apiKeyToValidate) {
-                                new Notice(`API Key required for ${currentProvider}. Enter one or check storage.`, 5000);
-                                return;
-                            }
-                             new Notice(`Re-validating stored key for ${currentProvider}...`);
-                        } else {
-                            // User entered a new key, save it first
-                             new Notice(`Validating new key for ${currentProvider}...`);
-                             await this.secrets.setSecret(currentProvider, apiKeyToValidate);
-                             console.log(`[Settings] Saved new API key for ${currentProvider} before validation.`);
-                        }
-                    } else {
-                         new Notice(`Fetching models for ${currentProvider}...`);
-                    }
-
-
-                    btn.setDisabled(true); // Disable button during validation
-                    this.workingProviders.delete(currentProvider); // Assume invalid until proven otherwise
-
-                    try {
-                        // Fetch models using the key (either new or stored)
-                        const models = await this.fetchAvailableModels(currentProvider, apiKeyToValidate);
-                        this.availableModels[currentProvider] = models; // Update models for this provider
-
-                        if (models.length > 0) {
-                            this.workingProviders.add(currentProvider); // Mark as working
-                            new Notice(`${currentProvider}: ${models.length} model(s) found. ${requiresApiKey ? 'Key validated!' : 'Models fetched!'}`, 5000);
-
-                            // Ensure model selection is valid after fetching
-                            const config = this.ensureProviderConfigExists(currentProvider); // Get config again
-                            if (config && (!models.includes(config.model))) {
-                                config.model = models[0]; // Reset to first available model
-                                new Notice(`Model reset to ${models[0]} as previous was unavailable.`, 3000);
-                                await this.plugin.saveSettings(); // Save model change
-                            }
-                        } else {
-                            // Validation failed or no models found
-                            new Notice(`${currentProvider}: Validation failed. No models found${requiresApiKey ? ' or invalid API key' : ''}. Check console.`, 5000);
-                        }
-                    } catch (error) {
-                         // Catch errors from fetchAvailableModels or setSecret
-                         console.error(`[Settings] Manual validation error for ${currentProvider}:`, error);
-                         this.availableModels[currentProvider] = []; // Clear models on error
-                         new Notice(`${currentProvider}: Validation failed. ${error.message}`, 7000);
-                    } finally {
-                        btn.setDisabled(false); // Re-enable button
-                        this.display(); // Redraw to update status indicator and model list
-                    }
-                });
-
-             // --- Status Indicator ---
-             const statusContainer = btn.extraSettingsEl.createSpan({ cls: "setting-item-description" });
-             statusContainer.style.marginLeft = "10px"; // Add some space
-
-             // Use the current state determined by validateAllStoredSecrets or manual validation
-             if (this.workingProviders.has(this.selectedProviderKey)) {
-                 statusContainer.setText("✅ Valid");
-                 statusContainer.style.color = "green";
-             } else if (requiresApiKey) {
-                  // Check if a secret *exists* even if not validated yet/failed validation
-                  // Use secrets.getSecret which waits for loading
-                  this.secrets.getSecret(this.selectedProviderKey).then(storedKey => {
-                      // Check again inside the promise as display might have re-rendered
-                      if (this.selectedProviderKey === selectedMeta.key) {
-                           if (storedKey) {
-                               statusContainer.setText("❓ Validation Needed / Failed");
-                               statusContainer.style.color = "orange";
-                           } else {
-                               statusContainer.setText("❌ No Key Set");
-                               statusContainer.style.color = "red";
-                           }
-                      }
-                  }).catch(err => {
-                      console.error("Error checking secret for status:", err);
-                      statusContainer.setText("⚠️ Error checking key");
-                      statusContainer.style.color = "red";
-                  });
-             } else {
-                 // Doesn't require API key, status depends if models were fetched
-                 if (this.availableModels[this.selectedProviderKey]?.length > 0) {
-                      statusContainer.setText("✅ Models Fetched");
-                      statusContainer.style.color = "green";
-                 } else {
-                      statusContainer.setText("❓ Fetch Models"); // Prompt to fetch local models
-                      statusContainer.style.color = "orange";
-                 }
-             }
-        });
-
-
-        // --- Model Selection Dropdown ---
-        const modelSetting = new Setting(containerEl)
-            .setName(`${selectedMeta.key} Model`)
-            .setDesc(`Select the model for ${selectedMeta.key}. (List updated after validation)`);
-
-        modelSetting.addDropdown(dropdown => {
-            // Get models specific to the currently selected provider
-            const modelOptions = this.availableModels[this.selectedProviderKey] ?? [];
-
-            // Use default model from metadata as a fallback if no models fetched yet
-            const defaultModel = selectedMeta.defaultModel;
-            let optionsToShow = [...modelOptions]; // Copy fetched models
-
-            // Ensure the currently selected model is in the list, add if necessary
-            const currentSelectedModel = currentConfig.model;
-            if (currentSelectedModel && !optionsToShow.includes(currentSelectedModel)) {
-                 optionsToShow.push(currentSelectedModel); // Add it temporarily if not fetched
-            }
-            // Ensure the default model is in the list if nothing else is
-            if (optionsToShow.length === 0 && defaultModel) {
-                 optionsToShow.push(defaultModel);
-            }
-
-            // Sort options for consistent display
-            optionsToShow.sort();
-
-
-            if (optionsToShow.length === 0) {
-                dropdown.addOption('', 'No models available (Validate key/Fetch first)');
-                dropdown.setDisabled(true);
-            } else {
-                optionsToShow.forEach(m => dropdown.addOption(m, m));
-                dropdown.setDisabled(false);
-            }
-
-            // Set current value, ensuring it exists in the options, fallback to first option
-            dropdown.setValue(optionsToShow.includes(currentSelectedModel) ? currentSelectedModel : optionsToShow[0] || '');
-
-            dropdown.onChange(async value => {
-                currentConfig.model = value;
-                await this.plugin.saveSettings();
-                new Notice(`${selectedMeta.key} model set to ${value}`);
-            });
-        });
-
-        // --- Display Fetched Models (if available) ---
-        const currentModels = this.availableModels[this.selectedProviderKey] ?? [];
-        if (currentModels.length > 0) {
-            const detailsEl = containerEl.createEl('details');
-            detailsEl.createEl('summary', { text: `View ${currentModels.length} Available Models` });
-            const listEl = detailsEl.createEl('ul', { cls: 'provider-model-list' });
-            // Limit displayed models for brevity if list is very long
-            const modelsToShow = currentModels.slice(0, 25);
-            modelsToShow.forEach(model => {
-                listEl.createEl('li', { text: model });
-            });
-            if (currentModels.length > 25) {
-                 listEl.createEl('li', { text: `... and ${currentModels.length - 25} more.` });
-            }
-        }
-
-        // --- Remove Configuration Button ---
-        // Show if a secret exists for this provider
-        this.secrets.getSecret(this.selectedProviderKey).then(storedKey => {
-             // Check provider again inside promise
-             if (this.selectedProviderKey === selectedMeta.key && storedKey) {
-                 new Setting(containerEl)
-                     .setName(`Remove ${selectedMeta.key} API Key`)
-                     .setDesc(`Removes the stored API key for ${selectedMeta.key}. The model selection will be kept.`)
-                     .addButton(btn => {
-                         btn.setButtonText('Remove Key')
-                             .setIcon('trash')
-                             .setWarning() // Use warning style for destructive action
-                             .onClick(async () => {
-                                 const providerToDelete = this.selectedProviderKey; // Capture key
-                                 new Notice(`Removing API key for ${providerToDelete}...`);
-
-                                 // Delete secret
-                                 await this.secrets.deleteSecret(providerToDelete);
-
-                                 // Remove from working providers and clear models for this provider
-                                 this.workingProviders.delete(providerToDelete);
-                                 this.availableModels[providerToDelete] = [];
-
-                                 // Keep the provider config in settings (don't reset model)
-                                 // Reset default/backup if needed
-                                 if (this.plugin.settings.defaultProvider === providerToDelete) {
-                                     this.plugin.settings.defaultProvider = '';
-                                     new Notice('Default provider cleared as its key was removed.', 3000);
-                                 }
-                                 if (this.plugin.settings.backupProvider === providerToDelete) {
-                                     this.plugin.settings.backupProvider = '';
-                                      new Notice('Backup provider cleared as its key was removed.', 3000);
-                                 }
-
-                                 // Save settings changes (default/backup provider)
-                                 await this.plugin.saveSettings();
-                                 new Notice(`${providerToDelete} API key removed.`);
-
-                                 // Refresh display
-                                 this.display();
-                             });
-                     });
-             }
-        }).catch(err => console.error("Error checking secret for remove button:", err));
-
-    }
-
-    // fetchAvailableModels - Added error handling consistency
-    async fetchAvailableModels(providerKey: string, apiKey: string | undefined): Promise<string[]> {
-        const fetcher = providerFetchers[providerKey];
-        const meta = providerMetadata[providerKey];
-
-        if (!meta) {
-             console.error(`[Settings] No metadata found for provider: ${providerKey}`);
-             return []; // No metadata for provider
-        }
-        if (meta.requiresApiKey && !apiKey) {
-             // This case is handled by the calling logic (validation button / auto-validation)
-             // which should not call fetch if key is required but missing.
-             // If called anyway, log and return empty.
-             console.warn(`[Settings] fetchAvailableModels called for ${providerKey} which requires an API key, but none was provided.`);
-             return [];
-        }
-        if (!fetcher) {
-            // Notice is okay here as it's an explicit action/validation failure
-            new Notice(`Model fetching not implemented for provider: ${providerKey}`);
-            console.warn(`Model fetching not implemented for provider: ${providerKey}`);
-            return [];
-        }
-
-        try {
-            // Pass apiKey even if potentially undefined; fetcher should handle it (like for 'local')
-            const models = await fetcher(apiKey || '', this.plugin.app); // Pass empty string if undefined/null
-            // Ensure result is always an array
-             return Array.isArray(models) ? models : [];
-        } catch (err) {
-            console.error(`[${providerKey}] Model fetch error during fetchAvailableModels:`, err);
-            // Don't show Notice here, let the calling logic (validation button / auto-validation) handle UI feedback
-             throw err; // Re-throw error so validation knows it failed and can show appropriate notice
-        }
-    }
+	plugin: MyPlugin;
+	private currentTab: string = 'text'; // Default tab
+	private tabs: Record<string, { display: () => void; instance: any }> = {};
+
+	constructor(app: App, plugin: MyPlugin) {
+		super(app, plugin);
+		this.plugin = plugin;
+
+		// Initialize tabs
+		this.tabs = {
+			text: { display: () => new TextTab(this).display(), instance: null },
+			image: { display: () => new ImageTab(this).display(), instance: null },
+			video: { display: () => new VideoTab(this).display(), instance: null },
+			audio: { display: () => new AudioTab(this).display(), instance: null },
+			ocr: { display: () => new OcrTab(this).display(), instance: null },
+		};
+	}
+
+	display(): void {
+		const { containerEl } = this;
+		containerEl.empty();
+
+		containerEl.createEl('h2', { text: 'LLM Provider Settings' });
+
+		// Tab Navigation
+		const tabBar = containerEl.createEl('div', { cls: 'setting-tab-bar' });
+		Object.keys(this.tabs).forEach((tabKey) => {
+			const tabBtn = tabBar.createEl('button', {
+				text: tabKey.charAt(0).toUpperCase() + tabKey.slice(1),
+				cls: this.currentTab === tabKey ? 'tab-active' : 'tab-inactive',
+			});
+			tabBtn.addEventListener('click', () => {
+				this.currentTab = tabKey;
+				this.display();
+			});
+		});
+
+		// Default and Backup Provider Settings
+		this.renderProviderDropdowns(containerEl);
+
+		// Display the current tab
+		const tabContent = containerEl.createEl('div', { cls: 'tab-content' });
+		this.tabs[this.currentTab].display();
+	}
+
+	private renderProviderDropdowns(containerEl: HTMLElement): void {
+		const createProviderDropdown = (
+			setting: Setting,
+			settingKey: 'defaultProvider' | 'backupProvider',
+			dataType: 'text' | 'image' | 'video' | 'audio' | 'ocr'
+		) => {
+			setting.addDropdown((dropdown) => {
+				const validProviders = Object.entries(PROVIDERS)
+					.filter(([_, meta]) => meta.supportedDataTypes.includes(dataType))
+					.filter(([id]) => this.plugin.settings.providers[id]?.apiKey || id === 'local');
+
+				dropdown.addOption('', '--- Select ---');
+				if (validProviders.length === 0) {
+					dropdown.addOption('', 'No validated providers available');
+					dropdown.setDisabled(true);
+				} else {
+					validProviders.forEach(([id]) => dropdown.addOption(id, id));
+					dropdown.setDisabled(false);
+				}
+
+				const currentValue = this.plugin.settings[settingKey];
+				dropdown.setValue(
+					validProviders.some(([id]) => id === currentValue) ? currentValue : ''
+				);
+
+				dropdown.onChange(async (value) => {
+					if (value === '') {
+						new Notice(
+							`Cleared ${settingKey === 'defaultProvider' ? 'Default' : 'Backup'} Provider.`
+						);
+					} else {
+						new Notice(
+							`${settingKey === 'defaultProvider' ? 'Default' : 'Backup'} provider set to ${value}`
+						);
+					}
+					this.plugin.settings[settingKey] = value;
+					await this.plugin.saveSettings();
+				});
+			});
+		};
+
+		const defaultProviderSetting = new Setting(containerEl)
+			.setName('Default Provider')
+			.setDesc('Primary provider for all operations (must be validated).');
+		createProviderDropdown(defaultProviderSetting, 'defaultProvider', this.currentTab as 'text' | 'image' | 'video' | 'audio' | 'ocr');
+
+		const backupProviderSetting = new Setting(containerEl)
+			.setName('Backup Provider')
+			.setDesc('Used if the default provider fails (must be validated).');
+		createProviderDropdown(backupProviderSetting, 'backupProvider', this.currentTab as 'text' | 'image' | 'video' | 'audio' | 'ocr');
+	}
 }
+
+===== src/settings/providers.ts =====
+
+import { fetchOpenAIModels } from './providers/openai';
+import { fetchLocalModels } from './providers/local';
+import { fetchAnthropicModels } from './providers/anthropic';
+import { fetchGroqModels } from './providers/groq';
+import { fetchGeminiModels } from './providers/gemini';
+import { fetchOpenRouterModels } from './providers/openrouter';
+import { fetchGrokModels } from './providers/grok';
+
+type FetchFunction = (apiKey?: string) => Promise<string[]>;
+
+export interface ProviderMetadata {
+	name: string;
+	supportedDataTypes: Array<'text' | 'image' | 'video' | 'audio' | 'ocr'>;
+	defaultModel: string;
+	requiresApiKey: boolean;
+	fetchModels: FetchFunction;
+}
+
+export const PROVIDERS: Record<string, ProviderMetadata> = {
+	openai: {
+		name: 'OpenAI',
+		supportedDataTypes: ['text', 'image'],
+		defaultModel: 'gpt-3.5-turbo',
+		requiresApiKey: true,
+		fetchModels: fetchOpenAIModels,
+	},
+	local: {
+		name: 'Local (Ollama)',
+		supportedDataTypes: ['text'],
+		defaultModel: 'llama2',
+		requiresApiKey: false,
+		fetchModels: fetchLocalModels,
+	},
+	anthropic: {
+		name: 'Anthropic',
+		supportedDataTypes: ['text'],
+		defaultModel: 'claude-3-opus-20240229',
+		requiresApiKey: true,
+		fetchModels: fetchAnthropicModels,
+	},
+	groq: {
+		name: 'Groq',
+		supportedDataTypes: ['text'],
+		defaultModel: 'mixtral-8x7b-32768',
+		requiresApiKey: true,
+		fetchModels: fetchGroqModels,
+	},
+	gemini: {
+		name: 'Google Gemini',
+		supportedDataTypes: ['text', 'image'],
+		defaultModel: 'models/gemini-pro',
+		requiresApiKey: true,
+		fetchModels: fetchGeminiModels,
+	},
+	openrouter: {
+		name: 'OpenRouter',
+		supportedDataTypes: ['text'],
+		defaultModel: 'openrouter/google/gemma-7b-it',
+		requiresApiKey: true,
+		fetchModels: fetchOpenRouterModels,
+	},
+	grok: {
+		name: 'Grok',
+		supportedDataTypes: ['text'],
+		defaultModel: 'grok-3-beta',
+		requiresApiKey: true,
+		fetchModels: fetchGrokModels,
+	},
+};
+===== src/settings/providerConfig.ts =====
+
+// providerConfig.ts
+
+import { fetchOpenAIModels } from './providers/openai';
+import { fetchLocalModels } from './providers/local';
+import { fetchAnthropicModels } from './providers/anthropic';
+import { fetchGroqModels } from './providers/groq';
+import { fetchGeminiModels } from './providers/gemini';
+import { fetchOpenRouterModels } from './providers/openrouter';
+import { fetchGrokModels } from './providers/grok';
+import { Setting } from 'obsidian'; // Needed for BaseProviderConfigTab
+import type { App } from 'obsidian'; // In case plugin typing is needed
+import type MyPlugin from '../../main'; // Reference your plugin main class
+
+// -----------------------------------------------------------
+// (1) Original functionality: Fetch functions and providers
+// -----------------------------------------------------------
+
+type FetchFunction = (apiKey?: string) => Promise<string[]>;
+
+export interface ProviderMetadata {
+	name: string;
+	supportedDataTypes: Array<'text' | 'image' | 'video' | 'audio' | 'ocr'>;
+	defaultModel: string;
+	requiresApiKey: boolean;
+	fetchModels: FetchFunction;
+}
+
+export const PROVIDERS: Record<string, ProviderMetadata> = {
+	openai: {
+		name: 'OpenAI',
+		supportedDataTypes: ['text', 'image'],
+		defaultModel: 'gpt-3.5-turbo',
+		requiresApiKey: true,
+		fetchModels: fetchOpenAIModels,
+	},
+	local: {
+		name: 'Local (Ollama)',
+		supportedDataTypes: ['text'],
+		defaultModel: 'llama2',
+		requiresApiKey: false,
+		fetchModels: fetchLocalModels,
+	},
+	anthropic: {
+		name: 'Anthropic',
+		supportedDataTypes: ['text'],
+		defaultModel: 'claude-3-opus-20240229',
+		requiresApiKey: true,
+		fetchModels: fetchAnthropicModels,
+	},
+	groq: {
+		name: 'Groq',
+		supportedDataTypes: ['text'],
+		defaultModel: 'mixtral-8x7b-32768',
+		requiresApiKey: true,
+		fetchModels: fetchGroqModels,
+	},
+	gemini: {
+		name: 'Google Gemini',
+		supportedDataTypes: ['text', 'image'],
+		defaultModel: 'models/gemini-pro',
+		requiresApiKey: true,
+		fetchModels: fetchGeminiModels,
+	},
+	openrouter: {
+		name: 'OpenRouter',
+		supportedDataTypes: ['text'],
+		defaultModel: 'openrouter/google/gemma-7b-it',
+		requiresApiKey: true,
+		fetchModels: fetchOpenRouterModels,
+	},
+	grok: {
+		name: 'Grok',
+		supportedDataTypes: ['text'],
+		defaultModel: 'grok-3-beta',
+		requiresApiKey: true,
+		fetchModels: fetchGrokModels,
+	},
+};
+
+// -----------------------------------------------------------
+// (2) New functionality: BaseProviderConfigTab class
+// -----------------------------------------------------------
+
+/**
+ * Base class for all per-data-type provider configuration tabs (text, image, video, etc.)
+ */
+export abstract class BaseProviderConfigTab {
+	protected settingTab: { plugin: MyPlugin; containerEl: HTMLElement };
+	protected plugin: MyPlugin;
+	protected type: 'text' | 'image' | 'video' | 'audio' | 'ocr';
+
+	constructor(settingTab: { plugin: MyPlugin; containerEl: HTMLElement }, type: 'text' | 'image' | 'video' | 'audio' | 'ocr') {
+		this.settingTab = settingTab;
+		this.plugin = settingTab.plugin;
+		this.type = type;
+	}
+
+	abstract display(): void;
+
+	/**
+	 * Shared rendering logic for configuring models for a given data type
+	 */
+	protected renderProviderConfig(): void {
+		const { containerEl } = this.settingTab;
+
+		containerEl.createEl('h4', { text: `Configure ${this.type.charAt(0).toUpperCase() + this.type.slice(1)} Settings` });
+
+		// Model Input field for the selected provider
+		new Setting(containerEl)
+			.setName('Model')
+			.setDesc(`Model used for ${this.type} operations.`)
+			.addText(text => {
+				const defaultProvider = this.plugin.settings.defaultProvider;
+				const providerConfig = this.plugin.settings.providers[defaultProvider];
+
+				text
+					.setPlaceholder('Model ID or name')
+					.setValue(providerConfig?.model || '')
+					.onChange(async (value) => {
+						// Save model under the correct provider for the correct type
+						if (this.plugin.settings.providers[defaultProvider]) {
+							this.plugin.settings.providers[defaultProvider].model = value.trim();
+							await this.plugin.saveSettings();
+							console.log(`[Settings] Updated model for ${defaultProvider}/${this.type} to ${value.trim()}`);
+						}
+					});
+			});
+	}
+}
+
+===== src/settings/tabs/ImageTab.ts =====
+
+// src/settings/tabs/ImageTab.ts
+
+import { BaseProviderConfigTab, PROVIDERS } from '../providerConfig';
+
+export class ImageTab extends BaseProviderConfigTab {
+	constructor(settingTab: { plugin: any; containerEl: HTMLElement }) {
+		super(settingTab, 'image');
+	}
+
+	display(): void {
+		const { containerEl } = this.settingTab;
+		containerEl.empty();
+
+		containerEl.createEl('h3', { text: 'Image Provider Configuration' });
+
+		const defaultProvider = this.plugin.settings.defaultProvider;
+		const providerMetadata = this.plugin.settings.providers[defaultProvider];
+
+		if (!providerMetadata) {
+			containerEl.createEl('p', { text: `No default provider is set or the provider is misconfigured.` });
+			return;
+		}
+
+		const providerInfo = PROVIDERS[defaultProvider];
+		if (!providerInfo || !providerInfo.supportedDataTypes.includes('image')) {
+			containerEl.createEl('p', { text: `The selected provider (${defaultProvider}) does not currently support image generation.` });
+			return;
+		}
+
+		this.renderProviderConfig();
+	}
+}
+
+===== src/settings/tabs/AudioTab.ts =====
+
+// src/settings/tabs/AudioTab.ts
+
+import { BaseProviderConfigTab, PROVIDERS } from '../providerConfig';
+
+export class AudioTab extends BaseProviderConfigTab {
+	constructor(settingTab: { plugin: any; containerEl: HTMLElement }) {
+		super(settingTab, 'audio');
+	}
+
+	display(): void {
+		const { containerEl } = this.settingTab;
+		containerEl.empty();
+
+		containerEl.createEl('h3', { text: 'Audio Provider Configuration' });
+
+		const defaultProvider = this.plugin.settings.defaultProvider;
+		const providerMetadata = this.plugin.settings.providers[defaultProvider];
+
+		if (!providerMetadata) {
+			containerEl.createEl('p', { text: `No default provider is set or the provider is misconfigured.` });
+			return;
+		}
+
+		const providerInfo = PROVIDERS[defaultProvider];
+		if (!providerInfo || !providerInfo.supportedDataTypes.includes('audio')) {
+			containerEl.createEl('p', { text: `The selected provider (${defaultProvider}) does not currently support audio.` });
+			return;
+		}
+
+		this.renderProviderConfig();
+	}
+}
+
+===== src/settings/tabs/VideoTab.ts =====
+
+// src/settings/tabs/VideoTab.ts
+
+import { BaseProviderConfigTab, PROVIDERS } from '../providerConfig';
+
+export class VideoTab extends BaseProviderConfigTab {
+	constructor(settingTab: { plugin: any; containerEl: HTMLElement }) {
+		super(settingTab, 'video');
+	}
+
+	display(): void {
+		const { containerEl } = this.settingTab;
+		containerEl.empty();
+
+		containerEl.createEl('h3', { text: 'Video Provider Configuration' });
+
+		const defaultProvider = this.plugin.settings.defaultProvider;
+		const providerMetadata = this.plugin.settings.providers[defaultProvider];
+
+		if (!providerMetadata) {
+			containerEl.createEl('p', { text: `No default provider is set or the provider is misconfigured.` });
+			return;
+		}
+
+		const providerInfo = PROVIDERS[defaultProvider];
+		if (!providerInfo || !providerInfo.supportedDataTypes.includes('video')) {
+			containerEl.createEl('p', { text: `The selected provider (${defaultProvider}) does not currently support video.` });
+			return;
+		}
+
+		this.renderProviderConfig();
+	}
+}
+
+===== src/settings/tabs/TextTab.ts =====
+
+// src/settings/tabs/TextTab.ts
+
+import { BaseProviderConfigTab, PROVIDERS } from '../providerConfig';
+
+export class TextTab extends BaseProviderConfigTab {
+	constructor(settingTab: { plugin: any; containerEl: HTMLElement }) {
+		super(settingTab, 'text');
+	}
+
+	display(): void {
+		const { containerEl } = this.settingTab;
+		containerEl.empty();
+
+		containerEl.createEl('h3', { text: 'Text Provider Configuration' });
+
+		const defaultProvider = this.plugin.settings.defaultProvider;
+		const providerMetadata = this.plugin.settings.providers[defaultProvider];
+
+		if (!providerMetadata) {
+			containerEl.createEl('p', { text: `No default provider is set or the provider is misconfigured.` });
+			return;
+		}
+
+		const providerInfo = PROVIDERS[defaultProvider];
+		if (!providerInfo || !providerInfo.supportedDataTypes.includes('text')) {
+			containerEl.createEl('p', { text: `The selected provider (${defaultProvider}) does not currently support text.` });
+			return;
+		}
+
+		this.renderProviderConfig();
+	}
+}
+
+===== src/settings/tabs/OcrTab.ts =====
+
+// src/settings/tabs/OcrTab.ts
+
+import { BaseProviderConfigTab, PROVIDERS } from '../providerConfig';
+
+export class OcrTab extends BaseProviderConfigTab {
+	constructor(settingTab: { plugin: any; containerEl: HTMLElement }) {
+		super(settingTab, 'ocr');
+	}
+
+	display(): void {
+		const { containerEl } = this.settingTab;
+		containerEl.empty();
+
+		containerEl.createEl('h3', { text: 'OCR Provider Configuration' });
+
+		const defaultProvider = this.plugin.settings.defaultProvider;
+		const providerMetadata = this.plugin.settings.providers[defaultProvider];
+
+		if (!providerMetadata) {
+			containerEl.createEl('p', { text: `No default provider is set or the provider is misconfigured.` });
+			return;
+		}
+
+		const providerInfo = PROVIDERS[defaultProvider];
+		if (!providerInfo || !providerInfo.supportedDataTypes.includes('ocr')) {
+			containerEl.createEl('p', { text: `The selected provider (${defaultProvider}) does not currently support OCR.` });
+			return;
+		}
+
+		this.renderProviderConfig();
+	}
+}
+
 ===== src/settings/providers/anthropic.ts =====
 
 import { requestUrl } from 'obsidian';
@@ -3152,104 +3059,199 @@ export class AnthropicAdapter implements LLMAdapter {
 
 ===== src/gateways/TextGateway.ts =====
 
+// src/gateways/TextGateway.ts
 import type { SecretsManager } from '../utils/secrets';
 import type { MyPluginSettings } from '../settings/settings';
 import { providerMetadata } from '../settings/providers/index';
-import type { LLMAdapter, LLMRequest } from '../core/Adapter';
+import type { LLMAdapter, LLMRequest, LLMResponse } from '../core/Adapter';
 import { OpenAIAdapter } from '../adapters/text/OpenAIAdapter';
 import { AnthropicAdapter } from '../adapters/text/AnthropicAdapter';
 import { GrokAdapter } from '../adapters/text/GrokAdapter';
 import { OpenRouterAdapter } from '../adapters/text/OpenRouterAdapter';
 import { GeminiAdapter } from '../adapters/text/GeminiAdapter';
-import { GroqAdapter } from '../adapters/text/GroqAdapter'; // Added import for GroqAdapter
+import { GroqAdapter } from '../adapters/text/GroqAdapter';
 
+/**
+ * TextGateway manages text generation across multiple LLM providers.
+ * It supports lazy initialization of adapters to improve startup performance,
+ * creating adapters only when they are first needed.
+ */
 export class TextGateway {
+  // Cache of initialized adapters
   private adapters: Record<string, LLMAdapter> = {};
+  // Tracks ongoing adapter creation promises to prevent duplicate initialization
+  private adapterPromises: Record<string, Promise<LLMAdapter | null>> = {};
 
+  /**
+   * Private constructor to enforce factory pattern and store dependencies.
+   * @param secrets - SecretsManager for retrieving API keys.
+   * @param settings - Plugin settings containing provider configurations.
+   * @param defaultProvider - The default provider key.
+   * @param backupProvider - The backup provider key for fallback.
+   */
   private constructor(
+    private secrets: SecretsManager,
+    private settings: MyPluginSettings,
     private defaultProvider: string,
     private backupProvider: string
   ) {}
 
-  /** Factory that reads your settings & secrets and instantiates one adapter per provider */
+  /**
+   * Factory method to create a TextGateway instance.
+   * Initializes the gateway with settings and secrets but defers adapter creation.
+   * @param secrets - SecretsManager instance.
+   * @param settings - Plugin settings.
+   * @returns A promise resolving to a TextGateway instance.
+   */
   static async create(
     secrets: SecretsManager,
     settings: MyPluginSettings
   ): Promise<TextGateway> {
+    console.log('[TextGateway] Creating TextGateway with lazy initialization...');
     const gw = new TextGateway(
+      secrets,
+      settings,
       settings.defaultProvider,
       settings.backupProvider
     );
-
-    for (const key of Object.keys(settings.providers)) {
-      const model = settings.providers[key].model;
-      let apiKey: string | undefined;
-
-      // Grab the key if needed
-      if (providerMetadata[key].requiresApiKey) {
-        apiKey = await secrets.getSecret(key);
-        if (!apiKey) {
-          console.warn(`[TextGateway] No API key found for ${key}. Skipping adapter.`);
-          continue;
-        }
-      }
-
-      // Instantiate the right adapter
-      let adapter: LLMAdapter;
-      switch (key) {
-        case 'openai':
-          adapter = new OpenAIAdapter(apiKey!, model);
-          break;
-        case 'anthropic':
-          adapter = new AnthropicAdapter(apiKey!, model);
-          break;
-        case 'grok':
-          adapter = new GrokAdapter(apiKey!, model);
-          break;
-        case 'openrouter':
-          adapter = new OpenRouterAdapter(apiKey!, model);
-          break;
-        case 'gemini':
-          adapter = new GeminiAdapter(apiKey!, model);
-          break;
-        case 'groq': // Added case for groq provider
-          adapter = new GroqAdapter(apiKey!, model);
-          break;
-        default:
-          console.warn(`[TextGateway] Unsupported provider: ${key}`);
-          continue; // skip unsupported
-      }
-
-      console.log(`[TextGateway] Adapter created for ${key} with model: ${model}`);
-      gw.adapters[key] = adapter;
-    }
-
-    console.log('[TextGateway] Initialized adapters:', Object.keys(gw.adapters));
+    console.log('[TextGateway] TextGateway initialized successfully.');
     return gw;
   }
 
-  /** Single entry point: try default, then fallback */
+  /**
+   * Lazily retrieves or creates an adapter for the specified provider.
+   * Ensures thread safety by handling concurrent requests for the same provider.
+   * @param provider - The provider key (e.g., 'openai', 'groq').
+   * @returns A promise resolving to the LLMAdapter or null if creation fails.
+   */
+  private async getAdapter(provider: string): Promise<LLMAdapter | null> {
+    // Return cached adapter if already initialized
+    if (this.adapters[provider]) {
+      console.log(`[TextGateway] Using cached adapter for ${provider}`);
+      return this.adapters[provider];
+    }
+
+    // Check if adapter creation is already in progress
+    if (provider in this.adapterPromises) {
+      console.log(`[TextGateway] Waiting for ongoing adapter creation for ${provider}`);
+      return await this.adapterPromises[provider];
+    }
+
+    // Start creating the adapter
+    console.log(`[TextGateway] Initiating adapter creation for ${provider}`);
+    this.adapterPromises[provider] = (async () => {
+      try {
+        // Validate provider metadata
+        const meta = providerMetadata[provider];
+        if (!meta) {
+          console.warn(`[TextGateway] No metadata found for provider: ${provider}`);
+          return null;
+        }
+
+        // Validate provider configuration
+        const config = this.settings.providers[provider];
+        if (!config) {
+          console.warn(`[TextGateway] No configuration found for provider: ${provider}`);
+          return null;
+        }
+
+        // Fetch API key if required
+        let apiKey: string | undefined;
+        if (meta.requiresApiKey) {
+          apiKey = await this.secrets.getSecret(provider);
+          if (!apiKey) {
+            console.warn(`[TextGateway] No API key found for ${provider}. Skipping adapter creation.`);
+            return null;
+          }
+        }
+
+        // Instantiate the appropriate adapter
+        let adapter: LLMAdapter;
+        switch (provider) {
+          case 'openai':
+            adapter = new OpenAIAdapter(apiKey!, config.model);
+            break;
+          case 'anthropic':
+            adapter = new AnthropicAdapter(apiKey!, config.model);
+            break;
+          case 'grok':
+            adapter = new GrokAdapter(apiKey!, config.model);
+            break;
+          case 'openrouter':
+            adapter = new OpenRouterAdapter(apiKey!, config.model);
+            break;
+          case 'gemini':
+            adapter = new GeminiAdapter(apiKey!, config.model);
+            break;
+          case 'groq':
+            adapter = new GroqAdapter(apiKey!, config.model);
+            break;
+          default:
+            console.warn(`[TextGateway] Unsupported provider: ${provider}`);
+            return null;
+        }
+
+        // Cache the adapter
+        this.adapters[provider] = adapter;
+        console.log(`[TextGateway] Adapter created for ${provider} with model: ${config.model}`);
+        return adapter;
+      } catch (error) {
+        console.error(`[TextGateway] Failed to create adapter for ${provider}:`, error);
+        return null;
+      } finally {
+        // Clean up the promise to allow future creation attempts if needed
+        delete this.adapterPromises[provider];
+      }
+    })();
+
+    return await this.adapterPromises[provider];
+  }
+
+  /**
+   * Generates text using the default provider, falling back to the backup provider if necessary.
+   * Lazily initializes adapters as needed.
+   * @param request - The LLM request containing prompt, model, and other parameters.
+   * @returns A promise resolving to the generated text output.
+   * @throws Error if both default and backup providers fail or are unavailable.
+   */
   async generate(request: LLMRequest): Promise<string> {
-    const primary = this.adapters[this.defaultProvider];
+    // Try the default provider
+    const primary = await this.getAdapter(this.defaultProvider);
     try {
       if (!primary) {
-        throw new Error(`No adapter found for default provider: ${this.defaultProvider}`);
+        throw new Error(`No adapter available for default provider: ${this.defaultProvider}`);
       }
-      const res = await primary.generate(request);
+      console.log(`[TextGateway] Generating with default provider: ${this.defaultProvider}`);
+      const res: LLMResponse = await primary.generate(request);
       return res.output;
     } catch (err) {
-      if (
-        this.backupProvider &&
-        this.adapters[this.backupProvider]
-      ) {
+      console.error(`[TextGateway] Default provider ${this.defaultProvider} failed:`, err);
+
+      // Try the backup provider if configured and different from the default
+      if (this.backupProvider && this.backupProvider !== this.defaultProvider) {
         console.log(`[TextGateway] Falling back to backup provider: ${this.backupProvider}`);
-        const fallback = await this.adapters[
-          this.backupProvider
-        ].generate(request);
+        const backup = await this.getAdapter(this.backupProvider);
+        if (!backup) {
+          throw new Error(`No adapter available for backup provider: ${this.backupProvider}`);
+        }
+        const fallback: LLMResponse = await backup.generate(request);
         return fallback.output;
       }
+
+      // No backup provider or backup failed; rethrow the error
       throw err;
     }
+  }
+
+  /**
+   * Gets the adapter for a specific provider (used by AiConsoleModal).
+   * Lazily initializes the adapter if not already created.
+   * @param provider - The provider key.
+   * @returns A promise resolving to the LLMAdapter or undefined if unavailable.
+   */
+  async getAdapterForProvider(provider: string): Promise<LLMAdapter | undefined> {
+    const adapter = await this.getAdapter(provider);
+    return adapter || undefined;
   }
 }
 ===== src/gateways/VisionGateway.ts =====

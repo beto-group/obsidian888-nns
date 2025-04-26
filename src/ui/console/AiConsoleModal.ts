@@ -73,7 +73,7 @@ export class AiConsoleModal extends Modal {
     this.container.empty();
 
     const tabIcons: Record<string, string> = {
-      text: 'file-text',
+      text: 'text',
       image: 'image',
       video: 'video',
       audio: 'volume-2',

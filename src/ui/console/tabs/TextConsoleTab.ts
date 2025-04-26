@@ -61,74 +61,76 @@ export class TextConsoleTab {
     this.promptHistory.render(container, this.historyClickHandler.bind(this));
   }
 
-  private async runPrompt() {
-    console.log('[TextConsoleTab] Run button clicked.');
-    const provider = this.providerSelector.getSelectedProvider();
-    const model = this.providerSelector.getSelectedModel() || this.settings.providers[provider]?.model || '';
-    const prompt = this.promptInput.getPrompt().trim();
-    const temperature = this.parameterControls.getTemperature();
-    const maxTokens = this.parameterControls.getMaxTokens();
+  // src/ui/console/tabs/TextConsoleTab.ts
+private async runPrompt() {
+  console.log('[TextConsoleTab] Run button clicked.');
+  const provider = this.providerSelector.getSelectedProvider();
+  const model = this.providerSelector.getSelectedModel() || this.settings.providers[provider]?.model || '';
+  const prompt = this.promptInput.getPrompt().trim();
+  const temperature = this.parameterControls.getTemperature();
+  const maxTokens = this.parameterControls.getMaxTokens();
 
-    this.outputViewer.clear();
+  this.outputViewer.clear();
 
-    if (!prompt) {
-      new Notice('Please enter a prompt.');
-      return;
-    }
-    if (!provider) {
-      new Notice('Please select a provider.');
-      return;
-    }
-    if (!this.textGateway) {
-      new Notice('TextGateway not initialized. Cannot generate response.');
-      this.outputViewer.setOutput('Error: TextGateway not initialized.');
-      return;
-    }
+  if (!prompt) {
+    new Notice('Please enter a prompt.');
+    return;
+  }
+  if (!provider) {
+    new Notice('Please select a provider.');
+    return;
+  }
+  if (!this.textGateway) {
+    new Notice('TextGateway not initialized. Cannot generate response.');
+    this.outputViewer.setOutput('Error: TextGateway not initialized.');
+    return;
+  }
+
+  // Changed: Use getAdapterForProvider instead of direct adapters access
+  const adapter = await this.textGateway.getAdapterForProvider(provider);
+  if (!adapter) {
+    new Notice(`No adapter found for provider: ${provider}. Please check configuration.`);
+    this.outputViewer.setOutput(`Error: No adapter for ${provider}.`);
+    console.error('[TextConsoleTab] No adapter found for provider:', provider);
+    return;
+  }
+
+  try {
+    this.outputViewer.setOutput('Generating...');
+    console.log('[TextConsoleTab] Testing provider:', provider, 'with request:', {
+      prompt: prompt.length > 50 ? prompt.slice(0, 50) + '...' : prompt,
+      model,
+      temperature,
+      maxTokens,
+    });
 
     const request: LLMRequest = { prompt, model, temperature, maxTokens };
-    const adapter = (this.textGateway as any).adapters[provider];
-    if (!adapter) {
-      new Notice(`No adapter found for provider: ${provider}. Please check configuration.`);
-      this.outputViewer.setOutput(`Error: No adapter for ${provider}.`);
-      console.error('[TextConsoleTab] No adapter found for provider:', provider);
-      return;
+    const result: LLMResponse = await adapter.generate(request);
+    let output = '[No result returned]';
+    let tokensUsed = 0;
+
+    if (result && typeof result.output === 'string') {
+      output = result.output.trim();
+      tokensUsed = result.tokensUsed || 0;
+    } else {
+      console.warn('[TextConsoleTab] Unexpected response format from provider:', provider, result);
+      output = '[Unexpected response format]';
     }
 
-    try {
-      this.outputViewer.setOutput('Generating...');
-      console.log('[TextConsoleTab] Testing provider:', provider, 'with request:', {
-        prompt: prompt.length > 50 ? prompt.slice(0, 50) + '...' : prompt,
-        model,
-        temperature,
-        maxTokens,
-      });
-
-      const result: LLMResponse = await adapter.generate(request);
-      let output = '[No result returned]';
-      let tokensUsed = 0;
-
-      if (result && typeof result.output === 'string') {
-        output = result.output.trim();
-        tokensUsed = result.tokensUsed || 0;
-      } else {
-        console.warn('[TextConsoleTab] Unexpected response format from provider:', provider, result);
-        output = '[Unexpected response format]';
-      }
-
-      this.outputViewer.setOutput(output);
-      this.outputViewer.setCode(`await window.aiNNS.text.generate("${prompt.replace(/"/g, '\\"')}", { model: "${model}", temperature: ${temperature}, maxTokens: ${maxTokens} });`);
-      this.addToHistory({ provider, model, prompt, output, timestamp: new Date().toLocaleString() });
-      console.log('[TextConsoleTab] Response received for', provider, ':', {
-        output: output.length > 50 ? output.slice(0, 50) + '...' : output,
-        tokensUsed,
-      });
-    } catch (error: any) {
-      console.error('[TextConsoleTab] Generation error for', provider, ':', error);
-      let errorMessage = `Error: ${error.message || 'Unknown error'}`;
-      this.outputViewer.setOutput(errorMessage);
-      new Notice(`Failed to generate with ${provider}: ${error.message || 'Unknown error'}`);
-    }
+    this.outputViewer.setOutput(output);
+    this.outputViewer.setCode(`await window.aiNNS.text.generate("${prompt.replace(/"/g, '\\"')}", { model: "${model}", temperature: ${temperature}, maxTokens: ${maxTokens} });`);
+    this.addToHistory({ provider, model, prompt, output, timestamp: new Date().toLocaleString() });
+    console.log('[TextConsoleTab] Response received for', provider, ':', {
+      output: output.length > 50 ? output.slice(0, 50) + '...' : output,
+      tokensUsed,
+    });
+  } catch (error: any) {
+    console.error('[TextConsoleTab] Generation error for', provider, ':', error);
+    let errorMessage = `Error: ${error.message || 'Unknown error'}`;
+    this.outputViewer.setOutput(errorMessage);
+    new Notice(`Failed to generate with ${provider}: ${error.message || 'Unknown error'}`);
   }
+}
 
   private historyClickHandler(entry: PromptHistoryEntry) {
     this.providerSelector.setProvider(entry.provider, entry.model);
