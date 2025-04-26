@@ -1,4 +1,4 @@
-import { App, Modal, Notice, setIcon } from 'obsidian';
+import { App, Modal, Notice } from 'obsidian';
 import type { MyPluginSettings } from '../../settings/settings';
 import type { SecretsManager } from '../../utils/secrets';
 import { TextConsoleTab } from './tabs/TextConsoleTab';
@@ -6,7 +6,7 @@ import { ImageConsoleTab } from './tabs/ImageConsoleTab';
 import { VideoConsoleTab } from './tabs/VideoConsoleTab';
 import { AudioConsoleTab } from './tabs/AudioConsoleTab';
 import { OcrConsoleTab } from './tabs/OcrConsoleTab';
-import { consoleCSS } from './styles/consoleStyles'; // 🔥 Make sure your build supports this
+import { TabComponent, TabConfig } from '../components/TabComponent';
 
 interface PromptHistoryEntry {
   provider: string;
@@ -28,8 +28,7 @@ export class AiConsoleModal extends Modal {
   private settings: MyPluginSettings;
   private secrets: SecretsManager;
   private tabs: ConsoleTab[] = [];
-  private activeTab: string = 'text';
-  private container: HTMLElement;
+  private tabComponent: TabComponent;
   private history: PromptHistoryEntry[] = [];
   private maxHistoryEntries = 10;
 
@@ -38,6 +37,11 @@ export class AiConsoleModal extends Modal {
     this.settings = settings;
     this.secrets = secrets;
     this.initializeTabs();
+    const tabConfigs: TabConfig[] = this.tabs.map(tab => ({
+      tab,
+      icon: this.getTabIcon(tab.id),
+    }));
+    this.tabComponent = new TabComponent(this.app, tabConfigs, 'text');
   }
 
   private initializeTabs() {
@@ -50,57 +54,23 @@ export class AiConsoleModal extends Modal {
     ];
   }
 
-  onOpen() {
-    console.log('[AiConsoleModal] Opening modal...');
-    this.titleEl.setText('AI Console Playground');
-    this.contentEl.empty();
-    this.container = this.contentEl.createEl('div', { cls: 'ai-console-container' });
-
-    // 🔥 Inject CSS as string into <head>
-    const style = document.createElement('style');
-    style.textContent = consoleCSS;
-    document.head.appendChild(style);
-
-    this.renderActiveTab();
-  }
-
-  private switchTab(tabId: string) {
-    this.activeTab = tabId;
-    this.renderActiveTab();
-  }
-
-  private renderActiveTab() {
-    this.container.empty();
-
+  private getTabIcon(tabId: string): string {
     const tabIcons: Record<string, string> = {
       text: 'text',
       image: 'image',
       video: 'video',
       audio: 'volume-2',
-      ocr: 'scan'
+      ocr: 'scan',
     };
+    return tabIcons[tabId] || 'circle';
+  }
 
-    const tabSelector = this.container.createEl('div', { cls: 'ai-console-tab-selector' });
-
-    this.tabs.forEach(tab => {
-      const isActive = tab.id === this.activeTab;
-      const tabButton = tabSelector.createEl('button', {
-        cls: `ai-console-tab-button${isActive ? ' active' : ''}`
-      });
-
-      const iconName = tabIcons[tab.id];
-      if (iconName) {
-        const iconEl = tabButton.createEl('span', { cls: 'ai-console-tab-icon' });
-        setIcon(iconEl, iconName);
-      }
-
-      tabButton.createSpan({ cls: 'ai-console-tab-label', text: tab.name.split(' ')[0] });
-      tabButton.addEventListener('click', () => this.switchTab(tab.id));
-    });
-
-    const content = this.container.createEl('div', { cls: 'ai-console-tab-content' });
-    const active = this.tabs.find(t => t.id === this.activeTab);
-    if (active) active.render(content);
+  onOpen() {
+    console.log('[AiConsoleModal] Opening modal...');
+    this.titleEl.setText('AI Console Playground');
+    this.contentEl.empty();
+    const container = this.contentEl.createEl('div', { cls: 'ai-console-container' });
+    this.tabComponent.render(container);
   }
 
   private addToHistory(entry: PromptHistoryEntry) {
@@ -112,15 +82,14 @@ export class AiConsoleModal extends Modal {
   }
 
   public renderHistory() {
-    const activeTab = this.tabs.find(tab => tab.id === this.activeTab);
+    const activeTab = this.tabs.find(tab => tab.id === this.tabComponent.getActiveTabId());
     if (activeTab && activeTab.renderHistory) {
       activeTab.renderHistory(this.history);
     }
   }
 
   onClose() {
-    this.tabs.forEach(tab => tab.cleanup());
-    this.container.empty();
+    this.tabComponent.cleanup();
     console.log('[AiConsoleModal] Modal closed.');
   }
 }
