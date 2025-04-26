@@ -21,6 +21,7 @@ interface PromptHistoryEntry {
 export class TextConsoleTab {
   id = 'text';
   name = 'Text Playground';
+  icon = 'file-text';
   private textGateway?: TextGateway;
   private providerSelector: ProviderSelector;
   private parameterControls: ParameterControls;

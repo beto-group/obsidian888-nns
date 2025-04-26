@@ -3,6 +3,7 @@ import os
 # ======= CONFIGURATION =======
 INCLUDE_FILES = [
     "src/settings",
+    "src/ui",
 ]
 OUTPUT_FILE = "code_dumpSetting.txt"
 FILE_EXTENSIONS = [".ts", ".js", ".py", ".html", ".css"]

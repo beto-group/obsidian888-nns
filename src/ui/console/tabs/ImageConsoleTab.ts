@@ -6,6 +6,7 @@ import type { SecretsManager } from '../../../utils/secrets';
 export class ImageConsoleTab {
   id = 'image';
   name = 'Image Playground';
+  icon = 'image';
 
   constructor(
     private app: App,

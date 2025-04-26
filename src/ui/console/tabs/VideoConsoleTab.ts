@@ -6,6 +6,7 @@ import type { SecretsManager } from '../../../utils/secrets';
 export class VideoConsoleTab {
   id = 'video';
   name = 'Video Playground';
+  icon = 'film';
 
   constructor(
     private app: App,

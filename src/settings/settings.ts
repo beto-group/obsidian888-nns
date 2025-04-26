@@ -1,22 +1,46 @@
 import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
 import type MyPlugin from '../../main';
 import { providerFetchers, providerMetadata } from './providers/index';
-import { SecretsManager } from '../utils/secrets'; // Correct path
+import { SecretsManager } from '../utils/secrets';
+import { TabComponent, TabConfig, Tab } from '../ui/components/TabComponent';
+
+// Define categories for provider selection
+export type Category = 'text' | 'image' | 'video' | 'audio' | 'ocr' | '3d';
+
+// Define supported providers per category
+const categoryProviders: Record<Category, string[]> = {
+    text: ['openai', 'anthropic', 'groq', 'gemini', 'openrouter', 'grok', 'local'],
+    image: ['openai', 'stabilityai', 'grok'],
+    video: [], // No providers yet; placeholder for future
+    audio: [], // No providers yet
+    ocr: [], // No providers yet
+    '3d': ['stabilityai'] // Added 3D category with stabilityai as a provider
+};
 
 export interface ProviderConfig {
     model: string;
 }
 
-export interface MyPluginSettings {
+export interface CategorySettings {
     defaultProvider: string;
     backupProvider: string;
+}
+
+export interface MyPluginSettings {
+    categories: Record<Category, CategorySettings>;
     providers: Record<string, ProviderConfig>;
 }
 
-// Dynamically generate DEFAULT_SETTINGS.providers from providerMetadata
+// Dynamically generate DEFAULT_SETTINGS
 export const DEFAULT_SETTINGS: MyPluginSettings = {
-    defaultProvider: 'openai', // Sensible default
-    backupProvider: '', // No default backup initially
+    categories: {
+        text: { defaultProvider: 'openai', backupProvider: '' },
+        image: { defaultProvider: 'openai', backupProvider: '' },
+        video: { defaultProvider: '', backupProvider: '' },
+        audio: { defaultProvider: '', backupProvider: '' },
+        ocr: { defaultProvider: '', backupProvider: '' },
+        '3d': { defaultProvider: '', backupProvider: '' } // Added 3D category
+    },
     providers: Object.keys(providerMetadata).reduce((acc, key) => {
         acc[key] = {
             model: providerMetadata[key].defaultModel
@@ -27,118 +51,102 @@ export const DEFAULT_SETTINGS: MyPluginSettings = {
 
 export class SampleSettingTab extends PluginSettingTab {
     plugin: MyPlugin;
-    secrets: SecretsManager; // Use the passed SecretsManager instance
+    secrets: SecretsManager;
     selectedProviderKey: string;
-    availableModels: Record<string, string[]> = {}; // Store models per provider
+    availableModels: Record<string, string[]> = {};
     workingProviders: Set<string> = new Set();
-    // Flag to prevent multiple concurrent validations on display
     isValidating: boolean = false;
-    // Flag to track if initial validation has run for this session
     hasDoneInitialValidation: boolean = false;
+    tabComponent: TabComponent | null = null;
 
-
-    // Modified constructor to accept SecretsManager instance
     constructor(app: App, plugin: MyPlugin, secretsManager: SecretsManager) {
         super(app, plugin);
         this.plugin = plugin;
-        this.secrets = secretsManager; // Use the already initialized instance
+        this.secrets = secretsManager;
 
-        // Determine initial provider selection more robustly
-        const defaultProvider = plugin.settings.defaultProvider;
+        // Initialize selected provider
+        const firstCategory = 'text';
+        const defaultProvider = this.plugin.settings.categories[firstCategory].defaultProvider;
         if (defaultProvider && providerMetadata[defaultProvider]) {
-             this.selectedProviderKey = defaultProvider;
+            this.selectedProviderKey = defaultProvider;
         } else if (Object.keys(providerMetadata).length > 0) {
-            this.selectedProviderKey = Object.keys(providerMetadata)[0]; // Fallback to first known provider
+            this.selectedProviderKey = Object.keys(providerMetadata)[0];
         } else {
-             this.selectedProviderKey = ''; // Should not happen if providerMetadata is populated
+            this.selectedProviderKey = '';
         }
 
-        // Ensure config exists for the initially selected provider
         if (this.selectedProviderKey) {
             this.ensureProviderConfigExists(this.selectedProviderKey);
         }
     }
 
-    /**
-     * Validates stored secrets for *all* providers on initial display.
-     * Populates workingProviders and availableModels.
-     */
     private async validateAllStoredSecrets(): Promise<void> {
-        // Prevent re-entry if already validating
         if (this.isValidating) return;
         this.isValidating = true;
         console.log("[Settings] Starting initial validation of all stored secrets...");
 
-        // Clear previous state
         this.workingProviders.clear();
         this.availableModels = {};
 
         let storedKeys: string[] = [];
         try {
-             storedKeys = await this.secrets.listSecrets();
-             console.log("[Settings] Stored secret keys found:", storedKeys);
+            storedKeys = await this.secrets.listSecrets();
+            console.log("[Settings] Stored secret keys found:", storedKeys);
         } catch (error) {
             console.error("[Settings] Failed to list secrets during validation:", error);
             this.isValidating = false;
-            return; // Abort validation if listing fails
+            return;
         }
 
-        let settingsChanged = false; // Track if any model needed resetting
+        let settingsChanged = false;
 
-        // Use Promise.all to run validations concurrently for faster loading
         const validationPromises = Object.keys(providerMetadata).map(async (providerKey) => {
             const meta = providerMetadata[providerKey];
             const requiresApiKey = meta.requiresApiKey;
             const hasStoredSecret = storedKeys.includes(providerKey);
 
-            // Ensure config exists before validation attempt
-            this.ensureProviderConfigExists(providerKey); // Safe to call multiple times
+            this.ensureProviderConfigExists(providerKey);
 
             if (!requiresApiKey) {
-                // Providers that don't need a key are always considered "working"
                 this.workingProviders.add(providerKey);
                 console.log(`[Settings] Added non-API-key provider: ${providerKey}`);
                 try {
-                    // Fetch models even for local providers if possible
                     const models = await this.fetchAvailableModels(providerKey, undefined);
                     this.availableModels[providerKey] = models;
                     if (models.length > 0) {
-                         const currentModel = this.plugin.settings.providers[providerKey]?.model;
-                         if (!currentModel || !models.includes(currentModel)) {
+                        const currentModel = this.plugin.settings.providers[providerKey]?.model;
+                        if (!currentModel || !models.includes(currentModel)) {
                             console.log(`[Settings] Resetting model for ${providerKey} to ${models[0]}`);
                             this.plugin.settings.providers[providerKey].model = models[0];
                             settingsChanged = true;
-                         }
+                        }
                     } else {
                         console.warn(`[Settings] No models found for non-API-key provider: ${providerKey}`);
                     }
                 } catch (error) {
-                     console.error(`[Settings] Error fetching models for non-API-key provider ${providerKey}:`, error);
-                     this.availableModels[providerKey] = []; // Set empty models on error
+                    console.error(`[Settings] Error fetching models for non-API-key provider ${providerKey}:`, error);
+                    this.availableModels[providerKey] = [];
                 }
-                return; // Skip further API key validation
+                return;
             }
 
-            // Handle providers requiring an API key
             if (hasStoredSecret) {
                 let apiKey: string | undefined;
                 try {
                     apiKey = await this.secrets.getSecret(providerKey);
                 } catch (error) {
                     console.error(`[Settings] Failed to get secret for ${providerKey}:`, error);
-                    return; // Skip this provider if secret retrieval fails
+                    return;
                 }
 
                 if (apiKey) {
                     console.log(`[Settings] Auto-validating stored secret for: ${providerKey}`);
                     try {
-                        // Attempt to fetch models to validate the key implicitly
                         const models = await this.fetchAvailableModels(providerKey, apiKey);
-                        this.availableModels[providerKey] = models; // Store fetched models
+                        this.availableModels[providerKey] = models;
 
                         if (models.length > 0) {
                             this.workingProviders.add(providerKey);
-                            // Ensure the selected model is valid, reset if not
                             const currentModel = this.plugin.settings.providers[providerKey]?.model;
                             if (!currentModel || !models.includes(currentModel)) {
                                 console.log(`[Settings] Resetting model for ${providerKey} to ${models[0]}`);
@@ -147,48 +155,42 @@ export class SampleSettingTab extends PluginSettingTab {
                             }
                             console.log(`[Settings] Auto-validation successful for: ${providerKey}`);
                         } else {
-                            // Validation failed (likely bad key or no models returned)
                             console.log(`[Settings] Auto-validation failed for stored secret: ${providerKey}. Needs manual re-validation.`);
                         }
                     } catch (error) {
-                         // Catch errors during model fetching for this provider
-                         console.error(`[Settings] Auto-validation model fetch error for ${providerKey}:`, error);
-                         this.availableModels[providerKey] = []; // Ensure models are empty on error
+                        console.error(`[Settings] Auto-validation model fetch error for ${providerKey}:`, error);
+                        this.availableModels[providerKey] = [];
                     }
                 } else {
-                    // Should not happen if listSecrets includes it, but safeguard
                     console.warn(`[Settings] Secret listed for ${providerKey} but getSecret returned undefined.`);
                     this.availableModels[providerKey] = [];
                 }
             } else {
                 console.log(`[Settings] No stored secret found for API key provider: ${providerKey}`);
-                this.availableModels[providerKey] = []; // No key, no models
+                this.availableModels[providerKey] = [];
             }
         });
 
-        // Wait for all validation attempts to complete
         await Promise.all(validationPromises);
 
-        // Save settings if any models were reset
         if (settingsChanged) {
             await this.plugin.saveSettings();
         }
 
         this.isValidating = false;
-        this.hasDoneInitialValidation = true; // Mark initial validation as complete
+        this.hasDoneInitialValidation = true;
         console.log("[Settings] Finished initial validation. Working providers:", Array.from(this.workingProviders));
 
-        // Refresh the display now that validation is complete
         this.display();
     }
 
     ensureProviderConfigExists(providerKey: string): ProviderConfig | undefined {
-        if (!providerKey) return undefined; // Handle empty key case
+        if (!providerKey) return undefined;
 
         const meta = providerMetadata[providerKey];
         if (!meta) {
-             console.error(`[Settings] No metadata found for provider key: ${providerKey}`);
-             return undefined; // No metadata, cannot create config
+            console.error(`[Settings] No metadata found for provider key: ${providerKey}`);
+            return undefined;
         }
 
         if (!this.plugin.settings.providers[providerKey]) {
@@ -196,73 +198,34 @@ export class SampleSettingTab extends PluginSettingTab {
                 model: meta.defaultModel
             };
             console.log(`[Settings] Added missing provider configuration for: ${providerKey}`);
-             // No need to save here, will be saved after validation or user action
         }
         return this.plugin.settings.providers[providerKey];
     }
 
-    // display() method triggers validation only once on first load
     async display(): Promise<void> {
-         // Trigger the comprehensive validation only once when the tab is first displayed
-         if (!this.hasDoneInitialValidation && !this.isValidating) {
-            // Use setTimeout to allow the current display call to finish rendering
-            // the basic structure before starting the async validation.
-            // This prevents potential race conditions or UI freezes.
+        if (!this.hasDoneInitialValidation && !this.isValidating) {
             setTimeout(() => this.validateAllStoredSecrets(), 0);
-            // Render a basic loading state or just the structure for now
-         }
+        }
 
         const { containerEl } = this;
-        containerEl.empty(); // Clear previous content
+        containerEl.empty();
 
         containerEl.createEl('h2', { text: 'LLM Provider Settings' });
 
-        // --- Default/Backup Provider Dropdowns ---
-        const createProviderDropdown = (setting: Setting, settingKey: 'defaultProvider' | 'backupProvider') => {
-            setting.addDropdown(dropdown => {
-                // Filter valid providers: must have metadata AND be in the workingProviders set
-                const validProviders = Object.keys(providerMetadata)
-                    .filter(id => this.workingProviders.has(id)); // Only show validated providers
+        // --- Category-based Provider Selection with Tabs ---
+        const tabs: TabConfig[] = Object.keys(categoryProviders).map(category => ({
+            tab: {
+                id: category,
+                name: category.charAt(0).toUpperCase() + category.slice(1),
+                render: (tabContainer: HTMLElement) => this.renderCategoryTab(tabContainer, category as Category),
+                cleanup: () => {} // No cleanup needed for static settings
+            },
+            icon: this.getTabIcon(category)
+        }));
 
-                dropdown.addOption('', '--- Select ---'); // Default empty option
-
-                if (validProviders.length === 0) {
-                    dropdown.addOption('', 'No validated providers available');
-                    dropdown.setDisabled(true);
-                } else {
-                    validProviders.forEach(id => dropdown.addOption(id, id)); // Add validated providers
-                    dropdown.setDisabled(false);
-                }
-
-                // Set current value, fallback to empty if current is invalid or not validated
-                const currentValue = this.plugin.settings[settingKey];
-                dropdown.setValue(validProviders.includes(currentValue) ? currentValue : '');
-
-                dropdown.onChange(async value => {
-                    const settingName = settingKey === 'defaultProvider' ? 'Default' : 'Backup';
-                    if (value === '') {
-                        new Notice(`Cleared ${settingName} Provider.`);
-                    } else {
-                        new Notice(`${settingName} provider set to ${value}`);
-                    }
-                    this.plugin.settings[settingKey] = value;
-                    await this.plugin.saveSettings();
-                    // Redraw needed if changing default affects selected provider display
-                    this.display();
-                });
-            });
-        };
-
-        const defaultProviderSetting = new Setting(containerEl)
-            .setName('Default Provider')
-            .setDesc('Primary provider (must be validated).');
-        createProviderDropdown(defaultProviderSetting, 'defaultProvider');
-
-        const backupProviderSetting = new Setting(containerEl)
-            .setName('Backup Provider')
-            .setDesc('Used if the default provider fails (must be validated).');
-        createProviderDropdown(backupProviderSetting, 'backupProvider');
-
+        this.tabComponent = new TabComponent(this.app, tabs, 'text');
+        const tabContainer = containerEl.createEl('div', { cls: 'category-tabs' });
+        this.tabComponent.render(tabContainer);
 
         containerEl.createEl('h3', { text: 'Configure Providers' });
 
@@ -272,10 +235,9 @@ export class SampleSettingTab extends PluginSettingTab {
             .setDesc('Choose a provider to set its API key (if required) and model.')
             .addDropdown(dropdown => {
                 Object.keys(providerMetadata).forEach(providerKey =>
-                    dropdown.addOption(providerKey, providerKey) // Add all known providers
+                    dropdown.addOption(providerKey, providerKey)
                 );
 
-                // Ensure selectedProviderKey is valid, fallback to first if not
                 if (!providerMetadata[this.selectedProviderKey]) {
                     this.selectedProviderKey = Object.keys(providerMetadata)[0] || '';
                 }
@@ -284,22 +246,20 @@ export class SampleSettingTab extends PluginSettingTab {
 
                 dropdown.onChange(value => {
                     this.selectedProviderKey = value;
-                    // DON'T clear availableModels here - keep fetched data
-                    this.ensureProviderConfigExists(this.selectedProviderKey); // Ensure config exists
-                    this.display(); // Redraw settings for the new provider
+                    this.ensureProviderConfigExists(this.selectedProviderKey);
+                    this.display();
                 });
             });
 
         // --- Configuration Section for Selected Provider ---
         if (!this.selectedProviderKey || !providerMetadata[this.selectedProviderKey]) {
             containerEl.createEl('p', { text: 'Please select a provider to configure.' });
-            return; // Stop rendering if no valid provider is selected
+            return;
         }
 
         const selectedMeta = providerMetadata[this.selectedProviderKey];
         const currentConfig = this.ensureProviderConfigExists(this.selectedProviderKey);
         if (!currentConfig) {
-             // This should not happen if ensureProviderConfigExists works correctly
             containerEl.createEl('p', { text: `Error: Configuration could not be created for ${this.selectedProviderKey}.` });
             return;
         }
@@ -307,7 +267,7 @@ export class SampleSettingTab extends PluginSettingTab {
         containerEl.createEl('h4', { text: `Configure: ${selectedMeta.key}` });
 
         // --- API Key Input + Validation Button ---
-        const apiKeySetting = new Setting(containerEl); // Create setting container
+        const apiKeySetting = new Setting(containerEl);
         const requiresApiKey = selectedMeta.requiresApiKey;
 
         apiKeySetting.setName(`${selectedMeta.key} API Key`)
@@ -315,127 +275,109 @@ export class SampleSettingTab extends PluginSettingTab {
                 ? `Enter/update key and click Validate.`
                 : `This provider does not require an API key.`);
 
-        let apiKeyInput: HTMLInputElement | null = null; // To hold reference to the input field
+        let apiKeyInput: HTMLInputElement | null = null;
 
         if (requiresApiKey) {
             apiKeySetting.addText(text => {
-                apiKeyInput = text.inputEl; // Store reference
+                apiKeyInput = text.inputEl;
                 text.setPlaceholder('Enter API key here')
-                    .setValue('') // Always clear on display for security
-                    .onChange(async value => {
-                        // No action on change, wait for button click
-                    });
-                text.inputEl.type = 'password'; // Mask input
-                text.inputEl.style.width = '300px'; // Set width
+                    .setValue('')
+                    .onChange(async value => {});
+                text.inputEl.type = 'password';
+                text.inputEl.style.width = '300px';
             });
         }
 
-        // Add validation button (always add, but functionality differs)
         apiKeySetting.addExtraButton(btn => {
             btn.setIcon('refresh-ccw')
                 .setTooltip(requiresApiKey
                     ? `Validate ${selectedMeta.key} key & fetch models`
                     : 'Fetch available models (no API key needed)')
-                // .setDisabled(!requiresApiKey) // Enable even if no API key for fetching local models etc.
                 .onClick(async () => {
                     let apiKeyToValidate: string | undefined = undefined;
-                    const currentProvider = this.selectedProviderKey; // Capture current provider
+                    const currentProvider = this.selectedProviderKey;
 
                     if (requiresApiKey) {
-                        if (!apiKeyInput) return; // Should not happen
-                        apiKeyToValidate = apiKeyInput.value.trim(); // Get current value from input
+                        if (!apiKeyInput) return;
+                        apiKeyToValidate = apiKeyInput.value.trim();
                         if (!apiKeyToValidate) {
-                            // If input is empty, try to re-validate the stored key
                             apiKeyToValidate = await this.secrets.getSecret(currentProvider);
                             if (!apiKeyToValidate) {
                                 new Notice(`API Key required for ${currentProvider}. Enter one or check storage.`, 5000);
                                 return;
                             }
-                             new Notice(`Re-validating stored key for ${currentProvider}...`);
+                            new Notice(`Re-validating stored key for ${currentProvider}...`);
                         } else {
-                            // User entered a new key, save it first
-                             new Notice(`Validating new key for ${currentProvider}...`);
-                             await this.secrets.setSecret(currentProvider, apiKeyToValidate);
-                             console.log(`[Settings] Saved new API key for ${currentProvider} before validation.`);
+                            new Notice(`Validating new key for ${currentProvider}...`);
+                            await this.secrets.setSecret(currentProvider, apiKeyToValidate);
+                            console.log(`[Settings] Saved new API key for ${currentProvider} before validation.`);
                         }
                     } else {
-                         new Notice(`Fetching models for ${currentProvider}...`);
+                        new Notice(`Fetching models for ${currentProvider}...`);
                     }
 
-
-                    btn.setDisabled(true); // Disable button during validation
-                    this.workingProviders.delete(currentProvider); // Assume invalid until proven otherwise
+                    btn.setDisabled(true);
+                    this.workingProviders.delete(currentProvider);
 
                     try {
-                        // Fetch models using the key (either new or stored)
                         const models = await this.fetchAvailableModels(currentProvider, apiKeyToValidate);
-                        this.availableModels[currentProvider] = models; // Update models for this provider
+                        this.availableModels[currentProvider] = models;
 
                         if (models.length > 0) {
-                            this.workingProviders.add(currentProvider); // Mark as working
+                            this.workingProviders.add(currentProvider);
                             new Notice(`${currentProvider}: ${models.length} model(s) found. ${requiresApiKey ? 'Key validated!' : 'Models fetched!'}`, 5000);
 
-                            // Ensure model selection is valid after fetching
-                            const config = this.ensureProviderConfigExists(currentProvider); // Get config again
+                            const config = this.ensureProviderConfigExists(currentProvider);
                             if (config && (!models.includes(config.model))) {
-                                config.model = models[0]; // Reset to first available model
+                                config.model = models[0];
                                 new Notice(`Model reset to ${models[0]} as previous was unavailable.`, 3000);
-                                await this.plugin.saveSettings(); // Save model change
+                                await this.plugin.saveSettings();
                             }
                         } else {
-                            // Validation failed or no models found
                             new Notice(`${currentProvider}: Validation failed. No models found${requiresApiKey ? ' or invalid API key' : ''}. Check console.`, 5000);
                         }
                     } catch (error) {
-                         // Catch errors from fetchAvailableModels or setSecret
-                         console.error(`[Settings] Manual validation error for ${currentProvider}:`, error);
-                         this.availableModels[currentProvider] = []; // Clear models on error
-                         new Notice(`${currentProvider}: Validation failed. ${error.message}`, 7000);
+                        console.error(`[Settings] Manual validation error for ${currentProvider}:`, error);
+                        this.availableModels[currentProvider] = [];
+                        new Notice(`${currentProvider}: Validation failed. ${error.message}`, 7000);
                     } finally {
-                        btn.setDisabled(false); // Re-enable button
-                        this.display(); // Redraw to update status indicator and model list
+                        btn.setDisabled(false);
+                        this.display();
                     }
                 });
 
-             // --- Status Indicator ---
-             const statusContainer = btn.extraSettingsEl.createSpan({ cls: "setting-item-description" });
-             statusContainer.style.marginLeft = "10px"; // Add some space
+            const statusContainer = btn.extraSettingsEl.createSpan({ cls: "setting-item-description" });
+            statusContainer.style.marginLeft = "10px";
 
-             // Use the current state determined by validateAllStoredSecrets or manual validation
-             if (this.workingProviders.has(this.selectedProviderKey)) {
-                 statusContainer.setText("✅ Valid");
-                 statusContainer.style.color = "green";
-             } else if (requiresApiKey) {
-                  // Check if a secret *exists* even if not validated yet/failed validation
-                  // Use secrets.getSecret which waits for loading
-                  this.secrets.getSecret(this.selectedProviderKey).then(storedKey => {
-                      // Check again inside the promise as display might have re-rendered
-                      if (this.selectedProviderKey === selectedMeta.key) {
-                           if (storedKey) {
-                               statusContainer.setText("❓ Validation Needed / Failed");
-                               statusContainer.style.color = "orange";
-                           } else {
-                               statusContainer.setText("❌ No Key Set");
-                               statusContainer.style.color = "red";
-                           }
-                      }
-                  }).catch(err => {
-                      console.error("Error checking secret for status:", err);
-                      statusContainer.setText("⚠️ Error checking key");
-                      statusContainer.style.color = "red";
-                  });
-             } else {
-                 // Doesn't require API key, status depends if models were fetched
-                 if (this.availableModels[this.selectedProviderKey]?.length > 0) {
-                      statusContainer.setText("✅ Models Fetched");
-                      statusContainer.style.color = "green";
-                 } else {
-                      statusContainer.setText("❓ Fetch Models"); // Prompt to fetch local models
-                      statusContainer.style.color = "orange";
-                 }
-             }
+            if (this.workingProviders.has(this.selectedProviderKey)) {
+                statusContainer.setText("✅ Valid");
+                statusContainer.style.color = "green";
+            } else if (requiresApiKey) {
+                this.secrets.getSecret(this.selectedProviderKey).then(storedKey => {
+                    if (this.selectedProviderKey === selectedMeta.key) {
+                        if (storedKey) {
+                            statusContainer.setText("❓ Validation Needed / Failed");
+                            statusContainer.style.color = "orange";
+                        } else {
+                            statusContainer.setText("❌ No Key Set");
+                            statusContainer.style.color = "red";
+                        }
+                    }
+                }).catch(err => {
+                    console.error("Error checking secret for status:", err);
+                    statusContainer.setText("⚠️ Error checking key");
+                    statusContainer.style.color = "red";
+                });
+            } else {
+                if (this.availableModels[this.selectedProviderKey]?.length > 0) {
+                    statusContainer.setText("✅ Models Fetched");
+                    statusContainer.style.color = "green";
+                } else {
+                    statusContainer.setText("❓ Fetch Models");
+                    statusContainer.style.color = "orange";
+                }
+            }
         });
-
 
         // --- Model Selection Dropdown ---
         const modelSetting = new Setting(containerEl)
@@ -443,26 +385,19 @@ export class SampleSettingTab extends PluginSettingTab {
             .setDesc(`Select the model for ${selectedMeta.key}. (List updated after validation)`);
 
         modelSetting.addDropdown(dropdown => {
-            // Get models specific to the currently selected provider
             const modelOptions = this.availableModels[this.selectedProviderKey] ?? [];
-
-            // Use default model from metadata as a fallback if no models fetched yet
             const defaultModel = selectedMeta.defaultModel;
-            let optionsToShow = [...modelOptions]; // Copy fetched models
+            let optionsToShow = [...modelOptions];
 
-            // Ensure the currently selected model is in the list, add if necessary
             const currentSelectedModel = currentConfig.model;
             if (currentSelectedModel && !optionsToShow.includes(currentSelectedModel)) {
-                 optionsToShow.push(currentSelectedModel); // Add it temporarily if not fetched
+                optionsToShow.push(currentSelectedModel);
             }
-            // Ensure the default model is in the list if nothing else is
             if (optionsToShow.length === 0 && defaultModel) {
-                 optionsToShow.push(defaultModel);
+                optionsToShow.push(defaultModel);
             }
 
-            // Sort options for consistent display
             optionsToShow.sort();
-
 
             if (optionsToShow.length === 0) {
                 dropdown.addOption('', 'No models available (Validate key/Fetch first)');
@@ -472,7 +407,6 @@ export class SampleSettingTab extends PluginSettingTab {
                 dropdown.setDisabled(false);
             }
 
-            // Set current value, ensuring it exists in the options, fallback to first option
             dropdown.setValue(optionsToShow.includes(currentSelectedModel) ? currentSelectedModel : optionsToShow[0] || '');
 
             dropdown.onChange(async value => {
@@ -482,101 +416,148 @@ export class SampleSettingTab extends PluginSettingTab {
             });
         });
 
-        // --- Display Fetched Models (if available) ---
+        // --- Display Fetched Models ---
         const currentModels = this.availableModels[this.selectedProviderKey] ?? [];
         if (currentModels.length > 0) {
             const detailsEl = containerEl.createEl('details');
             detailsEl.createEl('summary', { text: `View ${currentModels.length} Available Models` });
             const listEl = detailsEl.createEl('ul', { cls: 'provider-model-list' });
-            // Limit displayed models for brevity if list is very long
             const modelsToShow = currentModels.slice(0, 25);
             modelsToShow.forEach(model => {
                 listEl.createEl('li', { text: model });
             });
             if (currentModels.length > 25) {
-                 listEl.createEl('li', { text: `... and ${currentModels.length - 25} more.` });
+                listEl.createEl('li', { text: `... and ${currentModels.length - 25} more.` });
             }
         }
 
         // --- Remove Configuration Button ---
-        // Show if a secret exists for this provider
         this.secrets.getSecret(this.selectedProviderKey).then(storedKey => {
-             // Check provider again inside promise
-             if (this.selectedProviderKey === selectedMeta.key && storedKey) {
-                 new Setting(containerEl)
-                     .setName(`Remove ${selectedMeta.key} API Key`)
-                     .setDesc(`Removes the stored API key for ${selectedMeta.key}. The model selection will be kept.`)
-                     .addButton(btn => {
-                         btn.setButtonText('Remove Key')
-                             .setIcon('trash')
-                             .setWarning() // Use warning style for destructive action
-                             .onClick(async () => {
-                                 const providerToDelete = this.selectedProviderKey; // Capture key
-                                 new Notice(`Removing API key for ${providerToDelete}...`);
+            if (this.selectedProviderKey === selectedMeta.key && storedKey) {
+                new Setting(containerEl)
+                    .setName(`Remove ${selectedMeta.key} API Key`)
+                    .setDesc(`Removes the stored API key for ${selectedMeta.key}. The model selection will be kept.`)
+                    .addButton(btn => {
+                        btn.setButtonText('Remove Key')
+                            .setIcon('trash')
+                            .setWarning()
+                            .onClick(async () => {
+                                const providerToDelete = this.selectedProviderKey;
+                                new Notice(`Removing API key for ${providerToDelete}...`);
 
-                                 // Delete secret
-                                 await this.secrets.deleteSecret(providerToDelete);
+                                await this.secrets.deleteSecret(providerToDelete);
 
-                                 // Remove from working providers and clear models for this provider
-                                 this.workingProviders.delete(providerToDelete);
-                                 this.availableModels[providerToDelete] = [];
+                                this.workingProviders.delete(providerToDelete);
+                                this.availableModels[providerToDelete] = [];
 
-                                 // Keep the provider config in settings (don't reset model)
-                                 // Reset default/backup if needed
-                                 if (this.plugin.settings.defaultProvider === providerToDelete) {
-                                     this.plugin.settings.defaultProvider = '';
-                                     new Notice('Default provider cleared as its key was removed.', 3000);
-                                 }
-                                 if (this.plugin.settings.backupProvider === providerToDelete) {
-                                     this.plugin.settings.backupProvider = '';
-                                      new Notice('Backup provider cleared as its key was removed.', 3000);
-                                 }
+                                // Reset default/backup providers for affected categories
+                                Object.keys(this.plugin.settings.categories).forEach(category => {
+                                    const catSettings = this.plugin.settings.categories[category as Category];
+                                    if (catSettings.defaultProvider === providerToDelete) {
+                                        catSettings.defaultProvider = '';
+                                        new Notice(`Default provider for ${category} cleared as its key was removed.`, 3000);
+                                    }
+                                    if (catSettings.backupProvider === providerToDelete) {
+                                        catSettings.backupProvider = '';
+                                        new Notice(`Backup provider for ${category} cleared as its key was removed.`, 3000);
+                                    }
+                                });
 
-                                 // Save settings changes (default/backup provider)
-                                 await this.plugin.saveSettings();
-                                 new Notice(`${providerToDelete} API key removed.`);
+                                await this.plugin.saveSettings();
+                                new Notice(`${providerToDelete} API key removed.`);
 
-                                 // Refresh display
-                                 this.display();
-                             });
-                     });
-             }
+                                this.display();
+                            });
+                    });
+            }
         }).catch(err => console.error("Error checking secret for remove button:", err));
-
     }
 
-    // fetchAvailableModels - Added error handling consistency
+    private renderCategoryTab(container: HTMLElement, category: Category) {
+        const catSettings = this.plugin.settings.categories[category] || {
+            defaultProvider: '',
+            backupProvider: ''
+        };
+
+        // Create settings for default and backup providers
+        const createProviderDropdown = (setting: Setting, settingKey: 'defaultProvider' | 'backupProvider') => {
+            setting.addDropdown(dropdown => {
+                const validProviders = categoryProviders[category]
+                    .filter(id => this.workingProviders.has(id));
+
+                dropdown.addOption('', '--- Select ---');
+
+                if (validProviders.length === 0) {
+                    dropdown.addOption('', 'No validated providers available');
+                    dropdown.setDisabled(true);
+                } else {
+                    validProviders.forEach(id => dropdown.addOption(id, id));
+                    dropdown.setDisabled(false);
+                }
+
+                const currentValue = catSettings[settingKey];
+                dropdown.setValue(validProviders.includes(currentValue) ? currentValue : '');
+
+                dropdown.onChange(async value => {
+                    const settingName = settingKey === 'defaultProvider' ? 'Default' : 'Backup';
+                    if (value === '') {
+                        new Notice(`Cleared ${settingName} Provider for ${category}.`);
+                    } else {
+                        new Notice(`${settingName} provider for ${category} set to ${value}`);
+                    }
+                    catSettings[settingKey] = value;
+                    await this.plugin.saveSettings();
+                });
+            });
+        };
+
+        const defaultProviderSetting = new Setting(container)
+            .setName(`Default Provider for ${category}`)
+            .setDesc(`Primary provider for ${category} (must be validated).`);
+        createProviderDropdown(defaultProviderSetting, 'defaultProvider');
+
+        const backupProviderSetting = new Setting(container)
+            .setName(`Backup Provider for ${category}`)
+            .setDesc(`Used if the default provider for ${category} fails (must be validated).`);
+        createProviderDropdown(backupProviderSetting, 'backupProvider');
+    }
+
+    private getTabIcon(category: string): string {
+        const tabIcons: Record<string, string> = {
+            text: 'text',
+            image: 'image',
+            video: 'video',
+            audio: 'volume-2',
+            ocr: 'scan',
+            '3d': 'cube' // Already defined, should work fine
+        };
+        return tabIcons[category] || 'circle';
+    }
+
     async fetchAvailableModels(providerKey: string, apiKey: string | undefined): Promise<string[]> {
         const fetcher = providerFetchers[providerKey];
         const meta = providerMetadata[providerKey];
 
         if (!meta) {
-             console.error(`[Settings] No metadata found for provider: ${providerKey}`);
-             return []; // No metadata for provider
+            console.error(`[Settings] No metadata found for provider: ${providerKey}`);
+            return [];
         }
         if (meta.requiresApiKey && !apiKey) {
-             // This case is handled by the calling logic (validation button / auto-validation)
-             // which should not call fetch if key is required but missing.
-             // If called anyway, log and return empty.
-             console.warn(`[Settings] fetchAvailableModels called for ${providerKey} which requires an API key, but none was provided.`);
-             return [];
+            console.warn(`[Settings] fetchAvailableModels called for ${providerKey} which requires an API key, but none was provided.`);
+            return [];
         }
         if (!fetcher) {
-            // Notice is okay here as it's an explicit action/validation failure
             new Notice(`Model fetching not implemented for provider: ${providerKey}`);
             console.warn(`Model fetching not implemented for provider: ${providerKey}`);
             return [];
         }
 
         try {
-            // Pass apiKey even if potentially undefined; fetcher should handle it (like for 'local')
-            const models = await fetcher(apiKey || '', this.plugin.app); // Pass empty string if undefined/null
-            // Ensure result is always an array
-             return Array.isArray(models) ? models : [];
+            const models = await fetcher(apiKey || '', this.plugin.app);
+            return Array.isArray(models) ? models : [];
         } catch (err) {
             console.error(`[${providerKey}] Model fetch error during fetchAvailableModels:`, err);
-            // Don't show Notice here, let the calling logic (validation button / auto-validation) handle UI feedback
-             throw err; // Re-throw error so validation knows it failed and can show appropriate notice
+            throw err;
         }
     }
 }

@@ -56,14 +56,14 @@ export class TabComponent {
       const tabButton = tabSelector.createEl('button', {
         cls: `ai-console-tab-button${isActive ? ' active' : ''}`,
       });
-
-      // Add icon
+    
+      // Use the icon from TabConfig
       const iconEl = tabButton.createEl('span', { cls: 'ai-console-tab-icon' });
       setIcon(iconEl, icon);
-
-      // Add label
+    
+      // Add label with proper spacing
       tabButton.createSpan({ cls: 'ai-console-tab-label', text: tab.name.split(' ')[0] });
-
+    
       // Handle click
       tabButton.addEventListener('click', () => this.switchTab(tab.id));
     });
@@ -76,7 +76,7 @@ export class TabComponent {
   }
 
   /**
-   * Switches to the specified tab and re-renders the content.
+Interp   * Switches to the specified tab and re-renders the content.
    */
   private switchTab(tabId: string): void {
     if (tabId === this.activeTabId) return;

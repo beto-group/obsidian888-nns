@@ -1,12 +1,11 @@
-// src/ui/console/tabs/OcrConsoleTab.ts
 import { App } from 'obsidian';
 import type { MyPluginSettings } from '../../../settings/settings';
 import type { SecretsManager } from '../../../utils/secrets';
 
-export class OcrConsoleTab {
-  id = 'ocr';
-  name = 'OCR Playground';
-  icon = 'scan';
+export class ThreeDConsoleTab {
+  id = '3d';
+  name = '3D Playground';
+  icon = 'cube';
 
   constructor(
     private app: App,
@@ -15,7 +14,7 @@ export class OcrConsoleTab {
   ) {}
 
   render(container: HTMLElement) {
-    container.createEl('p', { text: 'OCR Console (Coming Soon)' });
+    container.createEl('p', { text: '3D Console (Coming Soon)' });
   }
 
   cleanup() {}

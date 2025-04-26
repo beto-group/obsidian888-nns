@@ -6,6 +6,7 @@ import type { SecretsManager } from '../../../utils/secrets';
 export class AudioConsoleTab {
   id = 'audio';
   name = 'Audio Playground';
+  icon = 'volume-2';
 
   constructor(
     private app: App,

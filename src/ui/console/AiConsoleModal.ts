@@ -6,6 +6,7 @@ import { ImageConsoleTab } from './tabs/ImageConsoleTab';
 import { VideoConsoleTab } from './tabs/VideoConsoleTab';
 import { AudioConsoleTab } from './tabs/AudioConsoleTab';
 import { OcrConsoleTab } from './tabs/OcrConsoleTab';
+import { ThreeDConsoleTab } from './tabs/ThreeDConsoleTab';
 import { TabComponent, TabConfig } from '../components/TabComponent';
 
 interface PromptHistoryEntry {
@@ -19,6 +20,7 @@ interface PromptHistoryEntry {
 interface ConsoleTab {
   id: string;
   name: string;
+  icon: string;
   render(container: HTMLElement): void;
   cleanup(): void;
   renderHistory?(history: PromptHistoryEntry[]): void;
@@ -39,7 +41,7 @@ export class AiConsoleModal extends Modal {
     this.initializeTabs();
     const tabConfigs: TabConfig[] = this.tabs.map(tab => ({
       tab,
-      icon: this.getTabIcon(tab.id),
+      icon: tab.icon
     }));
     this.tabComponent = new TabComponent(this.app, tabConfigs, 'text');
   }
@@ -51,18 +53,8 @@ export class AiConsoleModal extends Modal {
       new VideoConsoleTab(this.app, this.settings, this.secrets),
       new AudioConsoleTab(this.app, this.settings, this.secrets),
       new OcrConsoleTab(this.app, this.settings, this.secrets),
+      new ThreeDConsoleTab(this.app, this.settings, this.secrets)
     ];
-  }
-
-  private getTabIcon(tabId: string): string {
-    const tabIcons: Record<string, string> = {
-      text: 'text',
-      image: 'image',
-      video: 'video',
-      audio: 'volume-2',
-      ocr: 'scan',
-    };
-    return tabIcons[tabId] || 'circle';
   }
 
   onOpen() {

@@ -15,13 +15,34 @@ export const consoleCSS = `
   background: #2F2F2F;
   padding: 0;
   border-bottom: 1px solid var(--background-modifier-border);
+  flex-wrap: nowrap; /* Prevent wrapping to ensure all tabs are visible */
+  overflow-x: auto; /* Allow horizontal scrolling if tabs overflow */
+  -webkit-overflow-scrolling: touch; /* Smooth scrolling on touch devices */
+}
+
+/* Custom Scrollbar Styling */
+.ai-console-tab-selector::-webkit-scrollbar {
+  height: 4px; /* Slimmer scrollbar */
+}
+
+.ai-console-tab-selector::-webkit-scrollbar-track {
+  background: #2F2F2F; /* Match the background of the tab selector */
+}
+
+.ai-console-tab-selector::-webkit-scrollbar-thumb {
+  background: var(--background-modifier-border); /* Subtle thumb color */
+  border-radius: 2px;
+}
+
+.ai-console-tab-selector::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted); /* Slightly lighter on hover */
 }
 
 .ai-console-tab-button {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
+  gap: 8px; /* Gap between icon and label */
+  padding: 8px 14px; /* Increased padding for better spacing */
   border: none;
   border-right: 1px solid var(--background-modifier-border);
   background: #2F2F2F;
@@ -31,10 +52,12 @@ export const consoleCSS = `
   cursor: pointer;
   transition: all 0.2s ease;
   position: relative;
-  flex: 1;
   text-align: center;
   justify-content: center;
   opacity: 0.4;
+  min-width: 70px; /* Slightly increased min-width for better spacing */
+  white-space: nowrap; /* Prevent text wrapping */
+  flex-shrink: 0; /* Prevent the button from shrinking too much */
 }
 
 .ai-console-tab-button:last-child {
@@ -64,6 +87,7 @@ export const consoleCSS = `
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0; /* Prevent icon from shrinking */
 }
 
 .ai-console-tab-icon svg {
@@ -74,6 +98,7 @@ export const consoleCSS = `
 
 .ai-console-tab-label {
   display: inline-block;
+  flex-shrink: 0; /* Prevent label from shrinking */
 }
 
 .ai-console-tab-content {
