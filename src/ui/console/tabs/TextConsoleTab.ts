@@ -1,6 +1,6 @@
 // src/ui/console/tabs/TextConsoleTab.ts
 import { App, Notice, Setting, SliderComponent, TextComponent } from 'obsidian';
-import type { MyPluginSettings } from '../../../settings/settings';
+import type { MyPluginSettings } from '../../../settings/types';
 import type { SecretsManager } from '../../../utils/secrets';
 import { TextGateway } from '../../../gateways/TextGateway';
 import type { LLMRequest, LLMResponse } from '../../../core/Adapter';

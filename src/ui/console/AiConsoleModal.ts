@@ -1,5 +1,5 @@
 import { App, Modal, Notice } from 'obsidian';
-import type { MyPluginSettings } from '../../settings/settings';
+import type { MyPluginSettings } from '../../settings/types';
 import type { SecretsManager } from '../../utils/secrets';
 import { TextConsoleTab } from './tabs/TextConsoleTab';
 import { ImageConsoleTab } from './tabs/ImageConsoleTab';

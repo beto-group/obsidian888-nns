@@ -1,6 +1,6 @@
 // src/ui/console/tabs/ImageConsoleTab.ts
 import { App } from 'obsidian';
-import type { MyPluginSettings } from '../../../settings/settings';
+import type { MyPluginSettings } from '../../../settings/types';
 import type { SecretsManager } from '../../../utils/secrets';
 
 export class ImageConsoleTab {
