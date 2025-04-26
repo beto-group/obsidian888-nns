@@ -10,12 +10,9 @@ import {
     Plugin
 } from 'obsidian';
 
-import {
-    MyPluginSettings,
-    DEFAULT_SETTINGS,
-    SampleSettingTab
-} from './src/settings/settings';
-
+import { SampleSettingTab } from './src/settings/settings';
+import { DEFAULT_SETTINGS } from './src/settings/defaults';
+import { MyPluginSettings } from './src/settings/types';
 import { SecretsManager } from './src/utils/secrets';
 import { AiConsoleModal } from './src/ui/console/AiConsoleModal';
 import { registerAiNNS, unregisterAiNNS } from './src/api/aiNNS';
@@ -332,7 +329,7 @@ Interp   * Switches to the specified tab and re-renders the content.
 ===== src/ui/console/AiConsoleModal.ts =====
 
 import { App, Modal, Notice } from 'obsidian';
-import type { MyPluginSettings } from '../../settings/settings';
+import type { MyPluginSettings } from '../../settings/types';
 import type { SecretsManager } from '../../utils/secrets';
 import { TextConsoleTab } from './tabs/TextConsoleTab';
 import { ImageConsoleTab } from './tabs/ImageConsoleTab';
@@ -422,7 +419,7 @@ export class AiConsoleModal extends Modal {
 
 // src/ui/console/tabs/ImageConsoleTab.ts
 import { App } from 'obsidian';
-import type { MyPluginSettings } from '../../../settings/settings';
+import type { MyPluginSettings } from '../../../settings/types';
 import type { SecretsManager } from '../../../utils/secrets';
 
 export class ImageConsoleTab {
@@ -445,7 +442,7 @@ export class ImageConsoleTab {
 ===== src/ui/console/tabs/ThreeDConsoleTab.ts =====
 
 import { App } from 'obsidian';
-import type { MyPluginSettings } from '../../../settings/settings';
+import type { MyPluginSettings } from '../../../settings/types';
 import type { SecretsManager } from '../../../utils/secrets';
 
 export class ThreeDConsoleTab {
@@ -469,7 +466,7 @@ export class ThreeDConsoleTab {
 
 // src/ui/console/tabs/VideoConsoleTab.ts
 import { App } from 'obsidian';
-import type { MyPluginSettings } from '../../../settings/settings';
+import type { MyPluginSettings } from '../../../settings/types';
 import type { SecretsManager } from '../../../utils/secrets';
 
 export class VideoConsoleTab {
@@ -493,7 +490,7 @@ export class VideoConsoleTab {
 
 // src/ui/console/tabs/TextConsoleTab.ts
 import { App, Notice, Setting, SliderComponent, TextComponent } from 'obsidian';
-import type { MyPluginSettings } from '../../../settings/settings';
+import type { MyPluginSettings } from '../../../settings/types';
 import type { SecretsManager } from '../../../utils/secrets';
 import { TextGateway } from '../../../gateways/TextGateway';
 import type { LLMRequest, LLMResponse } from '../../../core/Adapter';
@@ -645,7 +642,7 @@ export class TextConsoleTab {
 
 // src/ui/console/tabs/OcrConsoleTab.ts
 import { App } from 'obsidian';
-import type { MyPluginSettings } from '../../../settings/settings';
+import type { MyPluginSettings } from '../../../settings/types';
 import type { SecretsManager } from '../../../utils/secrets';
 
 export class OcrConsoleTab {
@@ -669,7 +666,7 @@ export class OcrConsoleTab {
 
 // src/ui/console/tabs/AudioConsoleTab.ts
 import { App } from 'obsidian';
-import type { MyPluginSettings } from '../../../settings/settings';
+import type { MyPluginSettings } from '../../../settings/types';
 import type { SecretsManager } from '../../../utils/secrets';
 
 export class AudioConsoleTab {
@@ -1423,7 +1420,7 @@ export const categoryProviders: Record<Category, string[]> = {
     video: [], // No providers yet; placeholder for future
     audio: [], // No providers yet
     ocr: [], // No providers yet
-    '3d': ['stabilityai'] // Added 3D category with stabilityai as a provider
+    '3D': ['stabilityai'] // Added 3D category with stabilityai as a provider
 };
 
 // Dynamically generate DEFAULT_SETTINGS
@@ -1434,7 +1431,7 @@ export const DEFAULT_SETTINGS: MyPluginSettings = {
         video: { defaultProvider: '', backupProvider: '' },
         audio: { defaultProvider: '', backupProvider: '' },
         ocr: { defaultProvider: '', backupProvider: '' },
-        '3d': { defaultProvider: '', backupProvider: '' } // Added 3D category
+        '3D': { defaultProvider: '', backupProvider: '' }
     },
     providers: Object.keys(providerMetadata).reduce((acc, key) => {
         acc[key] = {
@@ -1443,6 +1440,7 @@ export const DEFAULT_SETTINGS: MyPluginSettings = {
         return acc;
     }, {} as Record<string, ProviderConfig>)
 };
+
 ===== src/settings/settings.ts =====
 
 import { App, PluginSettingTab } from 'obsidian';
@@ -1543,13 +1541,13 @@ export function getTabIcon(category: string): string {
         video: 'video',
         audio: 'volume-2',
         ocr: 'scan',
-        '3d': 'cube'
+        '3D': 'cube'
     };
     return tabIcons[category] || 'circle';
 }
 ===== src/settings/types.ts =====
 
-export type Category = 'text' | 'image' | 'video' | 'audio' | 'ocr' | '3d';
+export type Category = 'text' | 'image' | 'video' | 'audio' | 'ocr' | '3D';
 
 export interface ProviderConfig {
     model: string;
@@ -2691,495 +2689,7 @@ export class SecretsManager {
     }
 }
 
-===== src/adapters/text/GrokAdapter.ts =====
-
-import { requestUrl } from 'obsidian';
-import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
-import { fetchGrokModels } from '../../settings/providers/grok';
-
-/**
- * GrokAdapter implements the LLMAdapter interface for xAI's Grok API.
- * It supports text generation using the xAI API endpoint.
- */
-export class GrokAdapter implements LLMAdapter {
-  providerKey = 'grok';
-  private fallbackModel = 'grok-1'; // Safe default model for xAI Grok
-
-  constructor(
-    private apiKey: string,
-    private defaultModel: string
-  ) {
-    console.log('[GrokAdapter] Initialized with default model:', defaultModel);
-    console.log('[GrokAdapter] API key provided:', this.apiKey ? '[REDACTED]' : 'None');
-  }
-
-  /**
-   * Validates the provided model by checking against available xAI models.
-   * Returns the provided model if valid, else falls back to defaultModel or a known model.
-   */
-  private async validateModel(model?: string): Promise<string> {
-    console.log('[GrokAdapter] Validating model:', model || 'undefined');
-    const candidateModel = model || this.defaultModel;
-
-    try {
-      const availableModels = await fetchGrokModels(this.apiKey);
-      console.log('[GrokAdapter] Available models:', availableModels);
-
-      if (availableModels.includes(candidateModel)) {
-        console.log('[GrokAdapter] Model validated:', candidateModel);
-        return candidateModel;
-      }
-
-      if (availableModels.includes(this.defaultModel)) {
-        console.warn(
-          '[GrokAdapter] Invalid model provided:',
-          candidateModel,
-          'Falling back to default:',
-          this.defaultModel
-        );
-        return this.defaultModel;
-      }
-
-      if (availableModels.includes(this.fallbackModel)) {
-        console.warn(
-          '[GrokAdapter] Both provided model',
-          candidateModel,
-          'and default model',
-          this.defaultModel,
-          'are invalid. Falling back to:',
-          this.fallbackModel
-        );
-        return this.fallbackModel;
-      }
-
-      console.error('[GrokAdapter] No valid models available:', availableModels);
-      throw new Error('No valid Grok models available. Check API key or API status.');
-    } catch (error) {
-      console.error('[GrokAdapter] Error fetching available models:', error);
-      const fallback = this.defaultModel || this.fallbackModel;
-      console.warn('[GrokAdapter] Model fetch failed, using fallback model:', fallback);
-      return fallback;
-    }
-  }
-
-  /**
-   * Generates text using xAI's chat completions endpoint.
-   */
-  async generate(req: LLMRequest): Promise<LLMResponse> {
-    const model = await this.validateModel(req.model);
-    const body = {
-      model,
-      messages: [
-        ...(req.systemPrompt ? [{ role: 'system', content: req.systemPrompt }] : []),
-        { role: 'user', content: req.prompt },
-      ],
-      temperature: req.temperature ?? 0.7,
-      max_tokens: req.maxTokens ?? 1000,
-    };
-
-    console.log('[GrokAdapter] Sending request:', {
-      url: 'https://api.x.ai/v1/chat/completions',
-      body: {
-        ...body,
-        messages: body.messages.map(msg => ({
-          ...msg,
-          content: msg.content.length > 50 ? msg.content.slice(0, 50) + '...' : msg.content,
-        })),
-      },
-      headers: { Authorization: '[REDACTED]', 'Content-Type': 'application/json' },
-    });
-
-    try {
-      const resp = await requestUrl({
-        url: 'https://api.x.ai/v1/chat/completions',
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.apiKey.trim()}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      });
-
-      if (resp.status >= 400) {
-        let errorMessage = `Grok error ${resp.status}`;
-        try {
-          const errorBody = resp.json?.error?.message || resp.text || 'No additional details';
-          console.error('[GrokAdapter] Error response body:', errorBody);
-          errorMessage += `: ${errorBody}`;
-          if (resp.status === 401) {
-            errorMessage += '. Invalid API key. Verify your xAI API key in settings at https://x.ai/api.';
-          } else if (resp.status === 400) {
-            errorMessage += '. Check request parameters or model validity.';
-          } else if (resp.status === 429) {
-            errorMessage += '. Rate limit exceeded. Try again later or check your xAI account at https://x.ai/api.';
-          } else if (resp.status === 403) {
-            errorMessage += '. Check your API key permissions or account status at https://x.ai/api.';
-          } else if (resp.status >= 500) {
-            errorMessage += '. Server error at xAI. Try again later or contact xAI support.';
-          }
-        } catch {
-          errorMessage += ': Failed to parse error details';
-        }
-        throw new Error(errorMessage);
-      }
-
-      const data = resp.json as any;
-      if (!data.choices || !Array.isArray(data.choices) || !data.choices[0]?.message?.content) {
-        console.error('[GrokAdapter] Unexpected response format:', data);
-        throw new Error('Unexpected xAI API response format');
-      }
-
-      const output = data.choices[0].message.content.trim();
-      const tokensUsed = data.usage?.total_tokens || 0;
-      console.log('[GrokAdapter] Response received:', {
-        output: output.length > 50 ? output.slice(0, 50) + '...' : output,
-        tokensUsed,
-        model: data.model,
-      });
-
-      return {
-        output,
-        tokensUsed,
-      };
-    } catch (error) {
-      console.error('[GrokAdapter] Generation error:', error);
-      throw error;
-    }
-  }
-}
-===== src/adapters/text/OpenRouterAdapter.ts =====
-
-import { requestUrl } from 'obsidian';
-import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
-import { fetchOpenRouterModels } from '../../settings/providers/openrouter';
-
-/**
- * OpenRouterAdapter implements the LLMAdapter interface for OpenRouter's API.
- * It supports text generation using the /api/v1/chat/completions endpoint.
- */
-export class OpenRouterAdapter implements LLMAdapter {
-  providerKey = 'openrouter';
-  private fallbackModel = 'x-ai/grok-beta'; // Safe default from OpenRouter
-
-  constructor(
-    private apiKey: string,
-    private defaultModel: string
-  ) {
-    console.log('[OpenRouterAdapter] Initialized with default model:', defaultModel);
-  }
-
-  private async validateModel(model?: string): Promise<string> {
-    console.log('[OpenRouterAdapter] Validating model:', model || 'undefined');
-    const candidateModel = model || this.defaultModel;
-
-    try {
-      const availableModels = await fetchOpenRouterModels(this.apiKey);
-      console.log('[OpenRouterAdapter] Available models:', availableModels);
-
-      if (availableModels.includes(candidateModel)) {
-        console.log('[OpenRouterAdapter] Model validated:', candidateModel);
-        return candidateModel;
-      }
-
-      if (availableModels.includes(this.defaultModel)) {
-        console.warn(
-          '[OpenRouterAdapter] Invalid model provided:',
-          candidateModel,
-          'Falling back to default:',
-          this.defaultModel
-        );
-        return this.defaultModel;
-      }
-
-      if (availableModels.includes(this.fallbackModel)) {
-        console.warn(
-          '[OpenRouterAdapter] Both provided model',
-          candidateModel,
-          'and default model',
-          this.defaultModel,
-          'are invalid. Falling back to:',
-          this.fallbackModel
-        );
-        return this.fallbackModel;
-      }
-
-      console.error('[OpenRouterAdapter] No valid models available:', availableModels);
-      throw new Error('No valid OpenRouter models available. Check API key or API status.');
-    } catch (error) {
-      console.error('[OpenRouterAdapter] Error fetching available models:', error);
-      const fallback = this.defaultModel || this.fallbackModel;
-      console.warn('[OpenRouterAdapter] Model fetch failed, using fallback model:', fallback);
-      return fallback;
-    }
-  }
-
-  async generate(req: LLMRequest): Promise<LLMResponse> {
-    const model = req.model || this.defaultModel;
-    const body = {
-      model,
-      messages: [
-        ...(req.systemPrompt ? [{ role: 'system', content: req.systemPrompt }] : []),
-        { role: 'user', content: req.prompt }
-      ],
-      temperature: req.temperature ?? 0.7,
-      max_tokens: req.maxTokens ?? 1000
-    };
-  
-    const resp = await requestUrl({
-      url: 'https://openrouter.ai/api/v1/chat/completions',
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
-    });
-  
-    const json = resp.json;
-  
-    if (!json.choices || !Array.isArray(json.choices)) {
-      console.error('[OpenRouterAdapter] Unexpected response format:', json);
-      throw new Error('Unexpected OpenRouter API response format');
-    }
-  
-    const content = json.choices[0]?.message?.content ?? '';
-    const tokensUsed = json.usage?.total_tokens;
-  
-    return {
-      output: content,
-      tokensUsed
-    };
-  }
-}  
-===== src/adapters/text/GroqAdapter.ts =====
-
-import { requestUrl } from 'obsidian';
-import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
-import { fetchGroqModels } from '../../settings/providers/groq';
-
-/**
- * GroqAdapter implements the LLMAdapter interface for Groq's API.
- * It supports text generation using the /openai/v1/chat/completions endpoint
- * and ensures compatibility with any valid Groq model by validating against available models.
- */
-export class GroqAdapter implements LLMAdapter {
-  providerKey = 'groq';
-  private fallbackModel = 'llama3-8b-8192'; // Safe default model from curl response
-
-  constructor(
-    private apiKey: string,
-    private defaultModel: string
-  ) {
-    console.log('[GroqAdapter] Initialized with default model:', defaultModel);
-  }
-
-  /**
-   * Validates the provided model by checking against available Groq models.
-   * Returns the provided model if valid, else falls back to defaultModel or a known model.
-   * @param model - The model to validate.
-   * @returns A valid model ID.
-   */
-  private async validateModel(model?: string): Promise<string> {
-    console.log('[GroqAdapter] Validating model:', model || 'undefined');
-
-    // If no model is provided, use the default
-    const candidateModel = model || this.defaultModel;
-
-    try {
-      const availableModels = await fetchGroqModels(this.apiKey);
-      console.log('[GroqAdapter] Available models:', availableModels);
-
-      // Check if the candidate model is in the available models
-      if (availableModels.includes(candidateModel)) {
-        console.log('[GroqAdapter] Model validated:', candidateModel);
-        return candidateModel;
-      }
-
-      // If the candidate model is invalid, check if defaultModel is valid
-      if (availableModels.includes(this.defaultModel)) {
-        console.warn(
-          '[GroqAdapter] Invalid model provided:',
-          candidateModel,
-          'Falling back to default:',
-          this.defaultModel
-        );
-        return this.defaultModel;
-      }
-
-      // If both provided and default models are invalid, fall back to a known model
-      if (availableModels.includes(this.fallbackModel)) {
-        console.warn(
-          '[GroqAdapter] Both provided model',
-          candidateModel,
-          'and default model',
-          this.defaultModel,
-          'are invalid. Falling back to:',
-          this.fallbackModel
-        );
-        return this.fallbackModel;
-      }
-
-      // If no valid models are found, throw an error
-      console.error('[GroqAdapter] No valid models available:', availableModels);
-      throw new Error('No valid Groq models available. Check API key or API status.');
-    } catch (error) {
-      console.error('[GroqAdapter] Error fetching available models:', error);
-      // If model fetch fails, fall back to defaultModel or fallbackModel
-      const fallback = this.defaultModel || this.fallbackModel;
-      console.warn('[GroqAdapter] Model fetch failed, using fallback model:', fallback);
-      return fallback;
-    }
-  }
-
-  /**
-   * Generates text using Groq's /openai/v1/chat/completions endpoint.
-   * Validates the model and constructs a proper request body.
-   * @param req - The LLM request containing prompt, model, and other parameters.
-   * @returns The generated text and token usage.
-   */
-  async generate(req: LLMRequest): Promise<LLMResponse> {
-    // Validate the model
-    const model = await this.validateModel(req.model);
-
-    // Construct the request body to match curl example
-    const body = {
-      model,
-      messages: [
-        ...(req.systemPrompt ? [{ role: 'system', content: req.systemPrompt }] : []),
-        { role: 'user', content: req.prompt },
-      ],
-      temperature: req.temperature ?? 0.7, // Default to 0.7
-      max_tokens: req.maxTokens ?? 1000, // Default to 1000
-    };
-
-    // Log the request details (redact sensitive info)
-    console.log('[GroqAdapter] Sending request:', {
-      url: 'https://api.groq.com/openai/v1/chat/completions',
-      body: {
-        ...body,
-        messages: body.messages.map(msg => ({
-          ...msg,
-          content: msg.content.length > 50 ? msg.content.slice(0, 50) + '...' : msg.content,
-        })),
-      },
-      headers: { Authorization: '[REDACTED]', 'Content-Type': 'application/json' },
-    });
-
-    try {
-      // Make the API request
-      const resp = await requestUrl({
-        url: 'https://api.groq.com/openai/v1/chat/completions',
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.apiKey.trim()}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      });
-
-      // Handle HTTP errors
-      if (resp.status >= 400) {
-        let errorMessage = `Groq error ${resp.status}`;
-        try {
-          const errorBody = resp.json?.error?.message || resp.text || 'No additional details';
-          console.error('[GroqAdapter] Error response body:', errorBody);
-          errorMessage += `: ${errorBody}`;
-          if (resp.status === 401) {
-            errorMessage += '. Invalid API key. Please verify your Groq API key in settings.';
-          } else if (resp.status === 400) {
-            errorMessage += '. Check request parameters or model validity.';
-          } else if (resp.status === 403) {
-            errorMessage += '. Check your API key, permissions, or account status at console.groq.com.';
-          } else if (resp.status === 429) {
-            errorMessage += '. Rate limit exceeded. Try again later or check your Groq account.';
-          }
-        } catch {
-          errorMessage += ': Failed to parse error details';
-        }
-        throw new Error(errorMessage);
-      }
-
-      // Parse the response
-      const data = resp.json as any;
-      if (!data.choices || !Array.isArray(data.choices) || !data.choices[0]?.message?.content) {
-        console.error('[GroqAdapter] Unexpected response format:', data);
-        throw new Error('Unexpected Groq API response format');
-      }
-
-      // Return the generated text and token usage
-      const output = data.choices[0].message.content.trim();
-      const tokensUsed = data.usage?.total_tokens || 0;
-      console.log('[GroqAdapter] Response received:', {
-        output: output.length > 50 ? output.slice(0, 50) + '...' : output,
-        tokensUsed,
-        model: data.model, // Log the actual model used
-      });
-
-      return {
-        output,
-        tokensUsed,
-      };
-    } catch (error) {
-      console.error('[GroqAdapter] Generation error:', error);
-      throw error; // Re-throw to be handled by AiConsoleModal
-    }
-  }
-}
-===== src/adapters/text/OpenAIAdapter.ts =====
-
-// src/adapters/text/OpenAIAdapter.ts
-import { requestUrl } from 'obsidian';
-import type {
-  LLMAdapter,
-  LLMRequest,
-  LLMResponse
-} from '../../core/Adapter';
-
-export class OpenAIAdapter implements LLMAdapter {
-  providerKey = 'openai';
-
-  constructor(
-    private apiKey: string,
-    private defaultModel: string
-  ) {}
-
-  async generate(req: LLMRequest): Promise<LLMResponse> {
-    const model = req.model ?? this.defaultModel;
-    const body = {
-      model,
-      messages: [
-        { role: 'system', content: req.systemPrompt ?? '' },
-        { role: 'user', content: req.prompt }
-      ],
-      temperature: req.temperature,
-      max_tokens: req.maxTokens
-    };
-
-    const resp = await requestUrl({
-      url: 'https://api.openai.com/v1/chat/completions',
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
-    });
-
-    if (resp.status >= 400) {
-      throw new Error(
-        `OpenAI error ${resp.status}: ${resp.text}`
-      );
-    }
-
-    const data = resp.json as any;
-    return {
-      output: data.choices[0].message.content.trim(),
-      tokensUsed: data.usage?.total_tokens
-    };
-  }
-}
-
-===== src/adapters/text/GeminiAdapter.ts =====
+===== src/adapters/text/GeminiTextAdapter.ts =====
 
 import { requestUrl } from 'obsidian';
 import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
@@ -3374,53 +2884,437 @@ export class GeminiAdapter implements LLMAdapter {
     throw lastError || new Error('All API versions failed to generate content');
   }
 }
-===== src/adapters/text/AnthropicAdapter.ts =====
+===== src/adapters/text/GrokTextAdapter.ts =====
 
 import { requestUrl } from 'obsidian';
 import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
-import { fetchAnthropicModels } from '../../settings/providers/anthropic';
+import { fetchGrokModels } from '../../settings/providers/grok';
 
 /**
- * AnthropicAdapter implements the LLMAdapter interface for Anthropic's API.
- * It supports text generation using the /v1/messages endpoint and ensures
- * compatibility with any valid Anthropic model by validating against available models.
+ * GrokAdapter implements the LLMAdapter interface for xAI's Grok API.
+ * It supports text generation using the xAI API endpoint.
  */
-export class AnthropicAdapter implements LLMAdapter {
-  providerKey = 'anthropic';
-  private apiVersion = '2023-06-01'; // Stable Anthropic API version
-  private fallbackModel = 'claude-3-5-sonnet-latest'; // Safe default model
+export class GrokAdapter implements LLMAdapter {
+  providerKey = 'grok';
+  private fallbackModel = 'grok-1'; // Safe default model for xAI Grok
+
+  constructor(
+    private apiKey: string,
+    private defaultModel: string
+  ) {
+    console.log('[GrokAdapter] Initialized with default model:', defaultModel);
+    console.log('[GrokAdapter] API key provided:', this.apiKey ? '[REDACTED]' : 'None');
+  }
+
+  /**
+   * Validates the provided model by checking against available xAI models.
+   * Returns the provided model if valid, else falls back to defaultModel or a known model.
+   */
+  private async validateModel(model?: string): Promise<string> {
+    console.log('[GrokAdapter] Validating model:', model || 'undefined');
+    const candidateModel = model || this.defaultModel;
+
+    try {
+      const availableModels = await fetchGrokModels(this.apiKey);
+      console.log('[GrokAdapter] Available models:', availableModels);
+
+      if (availableModels.includes(candidateModel)) {
+        console.log('[GrokAdapter] Model validated:', candidateModel);
+        return candidateModel;
+      }
+
+      if (availableModels.includes(this.defaultModel)) {
+        console.warn(
+          '[GrokAdapter] Invalid model provided:',
+          candidateModel,
+          'Falling back to default:',
+          this.defaultModel
+        );
+        return this.defaultModel;
+      }
+
+      if (availableModels.includes(this.fallbackModel)) {
+        console.warn(
+          '[GrokAdapter] Both provided model',
+          candidateModel,
+          'and default model',
+          this.defaultModel,
+          'are invalid. Falling back to:',
+          this.fallbackModel
+        );
+        return this.fallbackModel;
+      }
+
+      console.error('[GrokAdapter] No valid models available:', availableModels);
+      throw new Error('No valid Grok models available. Check API key or API status.');
+    } catch (error) {
+      console.error('[GrokAdapter] Error fetching available models:', error);
+      const fallback = this.defaultModel || this.fallbackModel;
+      console.warn('[GrokAdapter] Model fetch failed, using fallback model:', fallback);
+      return fallback;
+    }
+  }
+
+  /**
+   * Generates text using xAI's chat completions endpoint.
+   */
+  async generate(req: LLMRequest): Promise<LLMResponse> {
+    const model = await this.validateModel(req.model);
+    const body = {
+      model,
+      messages: [
+        ...(req.systemPrompt ? [{ role: 'system', content: req.systemPrompt }] : []),
+        { role: 'user', content: req.prompt },
+      ],
+      temperature: req.temperature ?? 0.7,
+      max_tokens: req.maxTokens ?? 1000,
+    };
+
+    console.log('[GrokAdapter] Sending request:', {
+      url: 'https://api.x.ai/v1/chat/completions',
+      body: {
+        ...body,
+        messages: body.messages.map(msg => ({
+          ...msg,
+          content: msg.content.length > 50 ? msg.content.slice(0, 50) + '...' : msg.content,
+        })),
+      },
+      headers: { Authorization: '[REDACTED]', 'Content-Type': 'application/json' },
+    });
+
+    try {
+      const resp = await requestUrl({
+        url: 'https://api.x.ai/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiKey.trim()}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (resp.status >= 400) {
+        let errorMessage = `Grok error ${resp.status}`;
+        try {
+          const errorBody = resp.json?.error?.message || resp.text || 'No additional details';
+          console.error('[GrokAdapter] Error response body:', errorBody);
+          errorMessage += `: ${errorBody}`;
+          if (resp.status === 401) {
+            errorMessage += '. Invalid API key. Verify your xAI API key in settings at https://x.ai/api.';
+          } else if (resp.status === 400) {
+            errorMessage += '. Check request parameters or model validity.';
+          } else if (resp.status === 429) {
+            errorMessage += '. Rate limit exceeded. Try again later or check your xAI account at https://x.ai/api.';
+          } else if (resp.status === 403) {
+            errorMessage += '. Check your API key permissions or account status at https://x.ai/api.';
+          } else if (resp.status >= 500) {
+            errorMessage += '. Server error at xAI. Try again later or contact xAI support.';
+          }
+        } catch {
+          errorMessage += ': Failed to parse error details';
+        }
+        throw new Error(errorMessage);
+      }
+
+      const data = resp.json as any;
+      if (!data.choices || !Array.isArray(data.choices) || !data.choices[0]?.message?.content) {
+        console.error('[GrokAdapter] Unexpected response format:', data);
+        throw new Error('Unexpected xAI API response format');
+      }
+
+      const output = data.choices[0].message.content.trim();
+      const tokensUsed = data.usage?.total_tokens || 0;
+      console.log('[GrokAdapter] Response received:', {
+        output: output.length > 50 ? output.slice(0, 50) + '...' : output,
+        tokensUsed,
+        model: data.model,
+      });
+
+      return {
+        output,
+        tokensUsed,
+      };
+    } catch (error) {
+      console.error('[GrokAdapter] Generation error:', error);
+      throw error;
+    }
+  }
+}
+===== src/adapters/text/OpenAITextAdapter.ts =====
+
+// src/adapters/text/OpenAIAdapter.ts
+import { requestUrl } from 'obsidian';
+import type {
+  LLMAdapter,
+  LLMRequest,
+  LLMResponse
+} from '../../core/Adapter';
+
+export class OpenAIAdapter implements LLMAdapter {
+  providerKey = 'openai';
 
   constructor(
     private apiKey: string,
     private defaultModel: string
   ) {}
 
+  async generate(req: LLMRequest): Promise<LLMResponse> {
+    const model = req.model ?? this.defaultModel;
+    const body = {
+      model,
+      messages: [
+        { role: 'system', content: req.systemPrompt ?? '' },
+        { role: 'user', content: req.prompt }
+      ],
+      temperature: req.temperature,
+      max_tokens: req.maxTokens
+    };
+
+    const resp = await requestUrl({
+      url: 'https://api.openai.com/v1/chat/completions',
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (resp.status >= 400) {
+      throw new Error(
+        `OpenAI error ${resp.status}: ${resp.text}`
+      );
+    }
+
+    const data = resp.json as any;
+    return {
+      output: data.choices[0].message.content.trim(),
+      tokensUsed: data.usage?.total_tokens
+    };
+  }
+}
+
+===== src/adapters/text/OpenRouterTextAdapter.ts =====
+
+import { requestUrl } from 'obsidian';
+import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
+import { fetchOpenRouterModels } from '../../settings/providers/openrouter';
+
+/**
+ * OpenRouterAdapter implements the LLMAdapter interface for OpenRouter's API.
+ * It supports text generation using the /api/v1/chat/completions endpoint.
+ */
+export class OpenRouterAdapter implements LLMAdapter {
+  providerKey = 'openrouter';
+  private fallbackModel = 'x-ai/grok-beta'; // Safe default from OpenRouter
+
+  constructor(
+    private apiKey: string,
+    private defaultModel: string
+  ) {
+    console.log('[OpenRouterAdapter] Initialized with default model:', defaultModel);
+  }
+
+  private async validateModel(model?: string): Promise<string> {
+    console.log('[OpenRouterAdapter] Validating model:', model || 'undefined');
+    const candidateModel = model || this.defaultModel;
+
+    try {
+      const availableModels = await fetchOpenRouterModels(this.apiKey);
+      console.log('[OpenRouterAdapter] Available models:', availableModels);
+
+      if (availableModels.includes(candidateModel)) {
+        console.log('[OpenRouterAdapter] Model validated:', candidateModel);
+        return candidateModel;
+      }
+
+      if (availableModels.includes(this.defaultModel)) {
+        console.warn(
+          '[OpenRouterAdapter] Invalid model provided:',
+          candidateModel,
+          'Falling back to default:',
+          this.defaultModel
+        );
+        return this.defaultModel;
+      }
+
+      if (availableModels.includes(this.fallbackModel)) {
+        console.warn(
+          '[OpenRouterAdapter] Both provided model',
+          candidateModel,
+          'and default model',
+          this.defaultModel,
+          'are invalid. Falling back to:',
+          this.fallbackModel
+        );
+        return this.fallbackModel;
+      }
+
+      console.error('[OpenRouterAdapter] No valid models available:', availableModels);
+      throw new Error('No valid OpenRouter models available. Check API key or API status.');
+    } catch (error) {
+      console.error('[OpenRouterAdapter] Error fetching available models:', error);
+      const fallback = this.defaultModel || this.fallbackModel;
+      console.warn('[OpenRouterAdapter] Model fetch failed, using fallback model:', fallback);
+      return fallback;
+    }
+  }
+
+  async generate(req: LLMRequest): Promise<LLMResponse> {
+    const model = req.model || this.defaultModel;
+    const body = {
+      model,
+      messages: [
+        ...(req.systemPrompt ? [{ role: 'system', content: req.systemPrompt }] : []),
+        { role: 'user', content: req.prompt }
+      ],
+      temperature: req.temperature ?? 0.7,
+      max_tokens: req.maxTokens ?? 1000
+    };
+  
+    const resp = await requestUrl({
+      url: 'https://openrouter.ai/api/v1/chat/completions',
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+  
+    const json = resp.json;
+  
+    if (!json.choices || !Array.isArray(json.choices)) {
+      console.error('[OpenRouterAdapter] Unexpected response format:', json);
+      throw new Error('Unexpected OpenRouter API response format');
+    }
+  
+    const content = json.choices[0]?.message?.content ?? '';
+    const tokensUsed = json.usage?.total_tokens;
+  
+    return {
+      output: content,
+      tokensUsed
+    };
+  }
+}  
+===== src/adapters/text/AnthropicTextAdapter.ts =====
+
+// src/adapters/text/AnthropicTextAdapter.ts
+import { requestUrl } from 'obsidian';
+import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
+import { fetchAnthropicModels } from '../../settings/providers/anthropic';
+import { AnthropicBaseAdapter } from '../base/AnthropicBaseAdapter';
+
+export class AnthropicTextAdapter extends AnthropicBaseAdapter implements LLMAdapter {
+    private defaultModel: string;
+    private fallbackModel = 'claude-3-5-sonnet-20241022';
+
+    constructor(apiKey: string, defaultModel: string) {
+        super(apiKey);
+        this.defaultModel = defaultModel;
+        console.log('[AnthropicTextAdapter] Initialized with default model:', defaultModel);
+    }
+
+    async generate(req: LLMRequest): Promise<LLMResponse> {
+        const model = await this.validateModelInternal(req.model, this.defaultModel, this.fallbackModel);
+
+        const body = {
+            model,
+            messages: [
+                ...(req.systemPrompt ? [{ role: 'system', content: req.systemPrompt }] : []),
+                { role: 'user', content: req.prompt },
+            ],
+            temperature: req.temperature ?? 0.7,
+            max_tokens: req.maxTokens ?? 1000,
+        };
+
+        console.log('[AnthropicTextAdapter] Sending request:', {
+            endpoint: 'messages',
+            body: {
+                ...body,
+                messages: body.messages.map(msg => ({
+                    ...msg,
+                    content: msg.content.length > 50 ? msg.content.slice(0, 50) + '...' : msg.content,
+                })),
+            },
+        });
+
+        try {
+            const data = await this.makeRequest('messages', body, 'POST');
+
+            if (!data.content || !Array.isArray(data.content) || !data.content[0]?.text) {
+                console.error('[AnthropicTextAdapter] Unexpected response format:', data);
+                throw new Error('Unexpected Anthropic API response format');
+            }
+
+            const output = data.content[0].text.trim();
+            const tokensUsed = (data.usage?.output_tokens || 0) + (data.usage?.input_tokens || 0);
+
+            console.log('[AnthropicTextAdapter] Response received:', {
+                output: output.length > 50 ? output.slice(0, 50) + '...' : output,
+                tokensUsed,
+                model,
+            });
+
+            return {
+                output,
+                tokensUsed,
+            };
+        } catch (error) {
+            console.error('[AnthropicTextAdapter] Generation error:', error);
+            throw error;
+        }
+    }
+}
+===== src/adapters/text/GroqTextAdapter.ts =====
+
+import { requestUrl } from 'obsidian';
+import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
+import { fetchGroqModels } from '../../settings/providers/groq';
+
+/**
+ * GroqAdapter implements the LLMAdapter interface for Groq's API.
+ * It supports text generation using the /openai/v1/chat/completions endpoint
+ * and ensures compatibility with any valid Groq model by validating against available models.
+ */
+export class GroqAdapter implements LLMAdapter {
+  providerKey = 'groq';
+  private fallbackModel = 'llama3-8b-8192'; // Safe default model from curl response
+
+  constructor(
+    private apiKey: string,
+    private defaultModel: string
+  ) {
+    console.log('[GroqAdapter] Initialized with default model:', defaultModel);
+  }
+
   /**
-   * Validates the provided model by checking against available Anthropic models.
+   * Validates the provided model by checking against available Groq models.
    * Returns the provided model if valid, else falls back to defaultModel or a known model.
    * @param model - The model to validate.
    * @returns A valid model ID.
    */
   private async validateModel(model?: string): Promise<string> {
-    console.log('[AnthropicAdapter] Validating model:', model || 'undefined');
+    console.log('[GroqAdapter] Validating model:', model || 'undefined');
 
     // If no model is provided, use the default
     const candidateModel = model || this.defaultModel;
 
     try {
-      const availableModels = await fetchAnthropicModels(this.apiKey);
-      console.log('[AnthropicAdapter] Available models:', availableModels);
+      const availableModels = await fetchGroqModels(this.apiKey);
+      console.log('[GroqAdapter] Available models:', availableModels);
 
       // Check if the candidate model is in the available models
       if (availableModels.includes(candidateModel)) {
-        console.log('[AnthropicAdapter] Model validated:', candidateModel);
+        console.log('[GroqAdapter] Model validated:', candidateModel);
         return candidateModel;
       }
 
       // If the candidate model is invalid, check if defaultModel is valid
       if (availableModels.includes(this.defaultModel)) {
         console.warn(
-          '[AnthropicAdapter] Invalid model provided:',
+          '[GroqAdapter] Invalid model provided:',
           candidateModel,
           'Falling back to default:',
           this.defaultModel
@@ -3431,7 +3325,7 @@ export class AnthropicAdapter implements LLMAdapter {
       // If both provided and default models are invalid, fall back to a known model
       if (availableModels.includes(this.fallbackModel)) {
         console.warn(
-          '[AnthropicAdapter] Both provided model',
+          '[GroqAdapter] Both provided model',
           candidateModel,
           'and default model',
           this.defaultModel,
@@ -3442,19 +3336,19 @@ export class AnthropicAdapter implements LLMAdapter {
       }
 
       // If no valid models are found, throw an error
-      console.error('[AnthropicAdapter] No valid models available:', availableModels);
-      throw new Error('No valid Anthropic models available. Check API key or API status.');
+      console.error('[GroqAdapter] No valid models available:', availableModels);
+      throw new Error('No valid Groq models available. Check API key or API status.');
     } catch (error) {
-      console.error('[AnthropicAdapter] Error fetching available models:', error);
+      console.error('[GroqAdapter] Error fetching available models:', error);
       // If model fetch fails, fall back to defaultModel or fallbackModel
       const fallback = this.defaultModel || this.fallbackModel;
-      console.warn('[AnthropicAdapter] Model fetch failed, using fallback model:', fallback);
+      console.warn('[GroqAdapter] Model fetch failed, using fallback model:', fallback);
       return fallback;
     }
   }
 
   /**
-   * Generates text using Anthropic's /v1/messages endpoint.
+   * Generates text using Groq's /openai/v1/chat/completions endpoint.
    * Validates the model and constructs a proper request body.
    * @param req - The LLM request containing prompt, model, and other parameters.
    * @returns The generated text and token usage.
@@ -3463,20 +3357,20 @@ export class AnthropicAdapter implements LLMAdapter {
     // Validate the model
     const model = await this.validateModel(req.model);
 
-    // Construct the request body
+    // Construct the request body to match curl example
     const body = {
       model,
       messages: [
         ...(req.systemPrompt ? [{ role: 'system', content: req.systemPrompt }] : []),
         { role: 'user', content: req.prompt },
       ],
-      max_tokens: req.maxTokens ?? 1000, // Default to 1000 if unspecified
-      temperature: req.temperature ?? 0.7, // Default to 0.7 if unspecified
+      temperature: req.temperature ?? 0.7, // Default to 0.7
+      max_tokens: req.maxTokens ?? 1000, // Default to 1000
     };
 
     // Log the request details (redact sensitive info)
-    console.log('[AnthropicAdapter] Sending request:', {
-      url: 'https://api.anthropic.com/v1/messages',
+    console.log('[GroqAdapter] Sending request:', {
+      url: 'https://api.groq.com/openai/v1/chat/completions',
       body: {
         ...body,
         messages: body.messages.map(msg => ({
@@ -3484,33 +3378,36 @@ export class AnthropicAdapter implements LLMAdapter {
           content: msg.content.length > 50 ? msg.content.slice(0, 50) + '...' : msg.content,
         })),
       },
-      headers: { 'x-api-key': '[REDACTED]', 'anthropic-version': this.apiVersion },
+      headers: { Authorization: '[REDACTED]', 'Content-Type': 'application/json' },
     });
 
     try {
       // Make the API request
       const resp = await requestUrl({
-        url: 'https://api.anthropic.com/v1/messages',
+        url: 'https://api.groq.com/openai/v1/chat/completions',
         method: 'POST',
         headers: {
-          'x-api-key': this.apiKey.trim(),
+          Authorization: `Bearer ${this.apiKey.trim()}`,
           'Content-Type': 'application/json',
-          'anthropic-version': this.apiVersion,
         },
         body: JSON.stringify(body),
       });
 
       // Handle HTTP errors
       if (resp.status >= 400) {
-        let errorMessage = `Anthropic error ${resp.status}`;
+        let errorMessage = `Groq error ${resp.status}`;
         try {
           const errorBody = resp.json?.error?.message || resp.text || 'No additional details';
-          console.error('[AnthropicAdapter] Error response body:', errorBody);
+          console.error('[GroqAdapter] Error response body:', errorBody);
           errorMessage += `: ${errorBody}`;
           if (resp.status === 401) {
-            errorMessage += '. Invalid API key.';
+            errorMessage += '. Invalid API key. Please verify your Groq API key in settings.';
           } else if (resp.status === 400) {
             errorMessage += '. Check request parameters or model validity.';
+          } else if (resp.status === 403) {
+            errorMessage += '. Check your API key, permissions, or account status at console.groq.com.';
+          } else if (resp.status === 429) {
+            errorMessage += '. Rate limit exceeded. Try again later or check your Groq account.';
           }
         } catch {
           errorMessage += ': Failed to parse error details';
@@ -3520,17 +3417,18 @@ export class AnthropicAdapter implements LLMAdapter {
 
       // Parse the response
       const data = resp.json as any;
-      if (!data.content || !Array.isArray(data.content) || !data.content[0]?.text) {
-        console.error('[AnthropicAdapter] Unexpected response format:', data);
-        throw new Error('Unexpected Anthropic API response format');
+      if (!data.choices || !Array.isArray(data.choices) || !data.choices[0]?.message?.content) {
+        console.error('[GroqAdapter] Unexpected response format:', data);
+        throw new Error('Unexpected Groq API response format');
       }
 
       // Return the generated text and token usage
-      const output = data.content[0].text.trim();
-      const tokensUsed = (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0);
-      console.log('[AnthropicAdapter] Response received:', {
+      const output = data.choices[0].message.content.trim();
+      const tokensUsed = data.usage?.total_tokens || 0;
+      console.log('[GroqAdapter] Response received:', {
         output: output.length > 50 ? output.slice(0, 50) + '...' : output,
         tokensUsed,
+        model: data.model, // Log the actual model used
       });
 
       return {
@@ -3538,11 +3436,119 @@ export class AnthropicAdapter implements LLMAdapter {
         tokensUsed,
       };
     } catch (error) {
-      console.error('[AnthropicAdapter] Generation error:', error);
-      throw error; // Re-throw to be handled by TextGateway or AiConsoleModal
+      console.error('[GroqAdapter] Generation error:', error);
+      throw error; // Re-throw to be handled by AiConsoleModal
     }
   }
 }
+===== src/adapters/base/OpenRouterBaseAdapter.ts =====
+
+
+===== src/adapters/base/AnthropicBaseAdapter.ts =====
+
+// src/adapters/base/AnthropicBaseAdapter.ts
+import { requestUrl } from 'obsidian';
+import { fetchAnthropicModels } from '../../settings/providers/anthropic';
+
+export abstract class AnthropicBaseAdapter {
+    protected apiKey: string;
+    protected apiVersion = '2023-06-01';
+    public providerKey = 'anthropic'; // Changed from protected to public
+
+    constructor(apiKey: string) {
+        if (!apiKey) {
+            throw new Error(`[${this.constructor.name}] API key is required.`);
+        }
+        this.apiKey = apiKey.trim();
+        console.log(`[${this.constructor.name}] Initialized for provider: ${this.providerKey}`);
+        console.log(`[${this.constructor.name}] API key provided: [REDACTED]`);
+    }
+
+    protected async makeRequest(endpoint: string, body: any, method: 'POST' | 'GET' = 'POST'): Promise<any> {
+        const url = `https://api.anthropic.com/v1/${endpoint}`;
+        console.log(`[${this.constructor.name}] Sending ${method} request to ${url}`);
+
+        try {
+            const response = await requestUrl({
+                url,
+                method,
+                headers: {
+                    'x-api-key': this.apiKey,
+                    'Content-Type': 'application/json',
+                    'anthropic-version': this.apiVersion,
+                },
+                body: method === 'POST' ? JSON.stringify(body) : undefined,
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `${this.providerKey} error ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.error(`[${this.constructor.name}] Error response body:`, errorBody);
+                    errorMessage += `: ${errorBody}`;
+                    if (response.status === 401) {
+                        errorMessage += '. Invalid API key.';
+                    } else if (response.status === 400) {
+                        errorMessage += '. Check request parameters or model validity.';
+                    }
+                } catch (parseError) {
+                    errorMessage += ': Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+            return response.json;
+        } catch (error) {
+            console.error(`[${this.constructor.name}] API request failed:`, error);
+            throw error;
+        }
+    }
+
+    protected async validateModelInternal(
+        model: string | undefined,
+        defaultModel: string,
+        fallbackModel: string
+    ): Promise<string> {
+        console.log(`[${this.constructor.name}] Validating model: ${model || 'undefined'} (default: ${defaultModel}, fallback: ${fallbackModel})`);
+        const candidateModel = model || defaultModel;
+        try {
+            const availableModels = await fetchAnthropicModels(this.apiKey);
+            console.log(`[${this.constructor.name}] Available models:`, availableModels);
+            if (availableModels.includes(candidateModel)) {
+                console.log(`[${this.constructor.name}] Model validated:`, candidateModel);
+                return candidateModel;
+            }
+            if (availableModels.includes(defaultModel)) {
+                console.warn(`[${this.constructor.name}] Invalid model '${candidateModel}', falling back to default '${defaultModel}'`);
+                return defaultModel;
+            }
+            if (availableModels.includes(fallbackModel)) {
+                console.warn(`[${this.constructor.name}] Invalid models '${candidateModel}' and '${defaultModel}', falling back to known '${fallbackModel}'`);
+                return fallbackModel;
+            }
+            console.error(`[${this.constructor.name}] No valid models available from list:`, availableModels);
+            throw new Error(`No valid ${this.providerKey} models available.`);
+        } catch (error) {
+            console.error(`[${this.constructor.name}] Error fetching/validating models:`, error);
+            const finalFallback = defaultModel || fallbackModel;
+            console.warn(`[${this.constructor.name}] Using fallback model due to error:`, finalFallback);
+            return finalFallback;
+        }
+    }
+}
+
+import type { LLMRequest, LLMResponse } from '../../core/Adapter';
+===== src/adapters/base/GrokBaseAdapter.ts =====
+
+
+===== src/adapters/base/GeminiBaseAdapter.ts =====
+
+
+===== src/adapters/base/OpenAIBaseAdapter.ts =====
+
+
+===== src/adapters/base/GroqBaseAdapter.ts =====
+
+
 ===== src/gateways/ImageGateway.ts =====
 
 
@@ -3552,12 +3558,12 @@ import type { SecretsManager } from '../utils/secrets';
 import type { MyPluginSettings } from '../settings/types';
 import { providerMetadata } from '../settings/providers/index';
 import type { LLMAdapter, LLMRequest } from '../core/Adapter';
-import { OpenAIAdapter } from '../adapters/text/OpenAIAdapter';
-import { AnthropicAdapter } from '../adapters/text/AnthropicAdapter';
-import { GrokAdapter } from '../adapters/text/GrokAdapter';
-import { OpenRouterAdapter } from '../adapters/text/OpenRouterAdapter';
-import { GeminiAdapter } from '../adapters/text/GeminiAdapter';
-import { GroqAdapter } from '../adapters/text/GroqAdapter';
+import { OpenAIAdapter } from '../adapters/text/OpenAITextAdapter';
+import { AnthropicTextAdapter } from '../adapters/text/AnthropicTextAdapter'; // Fixed import
+import { GrokAdapter } from '../adapters/text/GrokTextAdapter';
+import { OpenRouterAdapter } from '../adapters/text/OpenRouterTextAdapter';
+import { GeminiAdapter } from '../adapters/text/GeminiTextAdapter';
+import { GroqAdapter } from '../adapters/text/GroqTextAdapter';
 
 export class TextGateway {
   private adapters: Record<string, LLMAdapter> = {};
@@ -3597,7 +3603,7 @@ export class TextGateway {
           adapter = new OpenAIAdapter(apiKey!, model);
           break;
         case 'anthropic':
-          adapter = new AnthropicAdapter(apiKey!, model);
+          adapter = new AnthropicTextAdapter(apiKey!, model);
           break;
         case 'grok':
           adapter = new GrokAdapter(apiKey!, model);

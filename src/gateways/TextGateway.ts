@@ -2,12 +2,12 @@ import type { SecretsManager } from '../utils/secrets';
 import type { MyPluginSettings } from '../settings/types';
 import { providerMetadata } from '../settings/providers/index';
 import type { LLMAdapter, LLMRequest } from '../core/Adapter';
-import { OpenAIAdapter } from '../adapters/text/OpenAIAdapter';
-import { AnthropicAdapter } from '../adapters/text/AnthropicAdapter';
-import { GrokAdapter } from '../adapters/text/GrokAdapter';
-import { OpenRouterAdapter } from '../adapters/text/OpenRouterAdapter';
-import { GeminiAdapter } from '../adapters/text/GeminiAdapter';
-import { GroqAdapter } from '../adapters/text/GroqAdapter';
+import { OpenAITextAdapter } from '../adapters/text/OpenAITextAdapter';
+import { AnthropicTextAdapter } from '../adapters/text/AnthropicTextAdapter'; // Fixed import
+import { GrokTextAdapter } from '../adapters/text/GrokTextAdapter';
+import { OpenRouterTextAdapter } from '../adapters/text/OpenRouterTextAdapter';
+import { GeminiTextAdapter } from '../adapters/text/GeminiTextAdapter';
+import { GroqTextAdapter } from '../adapters/text/GroqTextAdapter';
 
 export class TextGateway {
   private adapters: Record<string, LLMAdapter> = {};
@@ -44,22 +44,22 @@ export class TextGateway {
       let adapter: LLMAdapter;
       switch (key) {
         case 'openai':
-          adapter = new OpenAIAdapter(apiKey!, model);
+          adapter = new OpenAITextAdapter(apiKey!, model);
           break;
         case 'anthropic':
-          adapter = new AnthropicAdapter(apiKey!, model);
+          adapter = new AnthropicTextAdapter(apiKey!, model);
           break;
         case 'grok':
-          adapter = new GrokAdapter(apiKey!, model);
+          adapter = new GrokTextAdapter(apiKey!, model);
           break;
         case 'openrouter':
-          adapter = new OpenRouterAdapter(apiKey!, model);
+          adapter = new OpenRouterTextAdapter(apiKey!, model);
           break;
         case 'gemini':
-          adapter = new GeminiAdapter(apiKey!, model);
+          adapter = new GeminiTextAdapter(apiKey!, model);
           break;
         case 'groq':
-          adapter = new GroqAdapter(apiKey!, model);
+          adapter = new GroqTextAdapter(apiKey!, model);
           break;
         default:
           console.warn(`[TextGateway] Unsupported provider: ${key}`);
