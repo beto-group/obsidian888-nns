@@ -1,5 +1,4 @@
 import { requestUrl } from 'obsidian';
-import { fetchGeminiModels } from '../../settings/providers/gemini';
 
 export abstract class GeminiBaseAdapter {
     protected apiKey: string;
@@ -69,7 +68,7 @@ export abstract class GeminiBaseAdapter {
         const candidateModel = model || defaultModel;
 
         try {
-            const availableModels = await fetchGeminiModels(this.apiKey);
+            const availableModels = await GeminiBaseAdapter.fetchModels(this.apiKey);
             console.log(`[${this.constructor.name}] Available models:`, availableModels);
 
             const normalizedModels = availableModels.map(m => m.replace(/^models\//, ''));
@@ -92,6 +91,48 @@ export abstract class GeminiBaseAdapter {
             const finalFallback = defaultModel || fallbackModel;
             console.warn(`[${this.constructor.name}] Using fallback model due to error:`, finalFallback);
             return finalFallback;
+        }
+    }
+
+    public static async fetchModels(apiKey: string): Promise<string[]> {
+        try {
+            if (!apiKey) {
+                throw new Error(`[GeminiBaseAdapter] API key is required for fetching models.`);
+            }
+            const apiVersions = ['v1', 'v1beta'];
+            let lastError: Error | null = null;
+
+            for (const apiVersion of apiVersions) {
+                const url = `https://generativelanguage.googleapis.com/${apiVersion}/models?key=${apiKey.trim()}`;
+                console.log(`[GeminiBaseAdapter] Fetching models with URL:`, url);
+
+                try {
+                    const resp = await requestUrl({
+                        url,
+                        method: 'GET',
+                    });
+
+                    if (resp.status !== 200) {
+                        throw new Error(`Failed to fetch Gemini models: ${resp.status} - ${resp.text || 'No details'}`);
+                    }
+
+                    const data = resp.json as { models: { name: string }[] };
+                    const models = data.models
+                        .map(m => m.name.replace(/^models\//, ''))
+                        .filter(m => m.startsWith('gemini')); // Only include Gemini models
+                    console.log(`[GeminiBaseAdapter] Fetched models:`, models);
+                    return models;
+                } catch (error) {
+                    console.error(`[GeminiBaseAdapter] Error for API version ${apiVersion}:`, error);
+                    lastError = error;
+                    continue;
+                }
+            }
+
+            throw lastError || new Error('Failed to fetch models with all API versions');
+        } catch (error) {
+            console.error(`[GeminiBaseAdapter] Model fetch error:`, error);
+            return ['gemini-1.5-pro-latest', 'gemini-1.5-flash-latest']; // Fallback models
         }
     }
 }

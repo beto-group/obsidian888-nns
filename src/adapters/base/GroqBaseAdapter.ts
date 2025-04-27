@@ -1,5 +1,4 @@
 import { requestUrl } from 'obsidian';
-import { fetchGroqModels } from '../../settings/providers/groq';
 
 export abstract class GroqBaseAdapter {
     protected apiKey: string;
@@ -36,13 +35,13 @@ export abstract class GroqBaseAdapter {
                     console.error(`[${this.constructor.name}] Error response body:`, errorBody);
                     errorMessage += `: ${errorBody}`;
                     if (response.status === 401) {
-                        errorMessage += '. Invalid API key. Please verify your Groq API key in settings.';
+                        errorMessage += '. Invalid API key. Verify your Groq API key at https://console.groq.com/keys.';
                     } else if (response.status === 400) {
                         errorMessage += '. Check request parameters or model validity.';
-                    } else if (response.status === 403) {
-                        errorMessage += '. Check your API key, permissions, or account status at console.groq.com.';
                     } else if (response.status === 429) {
-                        errorMessage += '. Rate limit exceeded. Try again later or check your Groq account.';
+                        errorMessage += '. Rate limit exceeded. Try again later or check your Groq quota at https://console.groq.com.';
+                    } else if (response.status === 403) {
+                        errorMessage += '. Check your API key permissions or account status at https://console.groq.com.';
                     } else if (response.status >= 500) {
                         errorMessage += '. Server error at Groq. Try again later or contact Groq support.';
                     }
@@ -67,7 +66,7 @@ export abstract class GroqBaseAdapter {
         const candidateModel = model || defaultModel;
 
         try {
-            const availableModels = await fetchGroqModels(this.apiKey);
+            const availableModels = await GroqBaseAdapter.fetchModels(this.apiKey);
             console.log(`[${this.constructor.name}] Available models:`, availableModels);
 
             if (availableModels.includes(candidateModel)) {
@@ -89,6 +88,52 @@ export abstract class GroqBaseAdapter {
             const finalFallback = defaultModel || fallbackModel;
             console.warn(`[${this.constructor.name}] Using fallback model due to error:`, finalFallback);
             return finalFallback;
+        }
+    }
+
+    public static async fetchModels(apiKey: string): Promise<string[]> {
+        try {
+            if (!apiKey) {
+                throw new Error(`[GroqBaseAdapter] API key is required for fetching models.`);
+            }
+            const url = 'https://api.groq.com/openai/v1/models';
+            console.log(`[GroqBaseAdapter] Sending model fetch request:`, {
+                url,
+                headers: { Authorization: `Bearer ${apiKey.trim()}` }
+            });
+
+            const response = await requestUrl({
+                url,
+                method: 'GET',
+                headers: {
+                    Authorization: `Bearer ${apiKey.trim()}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `groq error: ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.log(`[GroqBaseAdapter] Error response body:`, errorBody);
+                    errorMessage += ` - ${errorBody}`;
+                    if (response.status === 401) {
+                        errorMessage += '. Invalid API key. Verify your Groq API key at https://console.groq.com/keys.';
+                    } else if (response.status === 403) {
+                        errorMessage += '. Check your API key permissions or account status at https://console.groq.com.';
+                    }
+                } catch {
+                    errorMessage += ' - Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+
+            const models = (response.json as { data: { id: string }[] }).data?.map(m => m.id).sort() ?? [];
+            console.log(`[GroqBaseAdapter] Fetched models:`, models);
+            return models;
+        } catch (error) {
+            console.error(`[GroqBaseAdapter] Model fetch error:`, error);
+            throw error;
         }
     }
 }

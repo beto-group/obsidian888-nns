@@ -1,8 +1,8 @@
 import { requestUrl } from 'obsidian';
 
-export abstract class OpenRouterBaseAdapter {
+export abstract class StabilityAIBaseAdapter {
     protected apiKey: string;
-    public providerKey = 'openrouter';
+    public providerKey = 'stabilityai';
 
     constructor(apiKey: string) {
         if (!apiKey) {
@@ -14,7 +14,7 @@ export abstract class OpenRouterBaseAdapter {
     }
 
     protected async makeRequest(endpoint: string, body: any, method: 'POST' | 'GET' = 'POST'): Promise<any> {
-        const url = `https://openrouter.ai/api/v1/${endpoint}`;
+        const url = `https://api.stability.ai/v1/${endpoint}`;
         console.log(`[${this.constructor.name}] Sending ${method} request to ${url}`);
 
         try {
@@ -35,15 +35,15 @@ export abstract class OpenRouterBaseAdapter {
                     console.error(`[${this.constructor.name}] Error response body:`, errorBody);
                     errorMessage += `: ${errorBody}`;
                     if (response.status === 401) {
-                        errorMessage += '. Invalid API key. Verify your OpenRouter API key at https://openrouter.ai/keys.';
+                        errorMessage += '. Invalid API key. Verify your StabilityAI API key at https://platform.stability.ai/account/keys.';
                     } else if (response.status === 400) {
                         errorMessage += '. Check request parameters or model validity.';
                     } else if (response.status === 429) {
-                        errorMessage += '. Rate limit exceeded. Try again later or check your OpenRouter quota at https://openrouter.ai/account.';
+                        errorMessage += '. Rate limit exceeded. Try again later or check your StabilityAI quota at https://platform.stability.ai/account/credits.';
                     } else if (response.status === 403) {
-                        errorMessage += '. Check your API key permissions or account status at https://openrouter.ai/account.';
+                        errorMessage += '. Check your API key permissions or account status at https://platform.stability.ai/account.';
                     } else if (response.status >= 500) {
-                        errorMessage += '. Server error at OpenRouter. Try again later or contact OpenRouter support.';
+                        errorMessage += '. Server error at StabilityAI. Try again later or contact StabilityAI support.';
                     }
                 } catch (parseError) {
                     errorMessage += ': Failed to parse error details';
@@ -66,7 +66,7 @@ export abstract class OpenRouterBaseAdapter {
         const candidateModel = model || defaultModel;
 
         try {
-            const availableModels = await OpenRouterBaseAdapter.fetchModels(this.apiKey);
+            const availableModels = await StabilityAIBaseAdapter.fetchModels(this.apiKey);
             console.log(`[${this.constructor.name}] Available models:`, availableModels);
 
             if (availableModels.includes(candidateModel)) {
@@ -94,10 +94,10 @@ export abstract class OpenRouterBaseAdapter {
     public static async fetchModels(apiKey: string): Promise<string[]> {
         try {
             if (!apiKey) {
-                throw new Error(`[OpenRouterBaseAdapter] API key is required for fetching models.`);
+                throw new Error(`[StabilityAIBaseAdapter] API key is required for fetching models.`);
             }
-            const url = 'https://openrouter.ai/api/v1/models';
-            console.log(`[OpenRouterBaseAdapter] Sending model fetch request:`, {
+            const url = 'https://api.stability.ai/v1/engines/list';
+            console.log(`[StabilityAIBaseAdapter] Sending model fetch request:`, {
                 url,
                 headers: { Authorization: `Bearer ${apiKey.trim()}` }
             });
@@ -112,15 +112,15 @@ export abstract class OpenRouterBaseAdapter {
             });
 
             if (response.status >= 400) {
-                let errorMessage = `openrouter error: ${response.status}`;
+                let errorMessage = `stabilityai error: ${response.status}`;
                 try {
                     const errorBody = response.json?.error?.message || response.text || 'No additional details';
-                    console.log(`[OpenRouterBaseAdapter] Error response body:`, errorBody);
+                    console.log(`[StabilityAIBaseAdapter] Error response body:`, errorBody);
                     errorMessage += ` - ${errorBody}`;
                     if (response.status === 401) {
-                        errorMessage += '. Invalid API key. Verify your OpenRouter API key at https://openrouter.ai/keys.';
+                        errorMessage += '. Invalid API key. Verify your StabilityAI API key at https://platform.stability.ai/account/keys.';
                     } else if (response.status === 403) {
-                        errorMessage += '. Check your API key permissions or account status at https://openrouter.ai/account.';
+                        errorMessage += '. Check your API key permissions or account status at https://platform.stability.ai/account.';
                     }
                 } catch {
                     errorMessage += ' - Failed to parse error details';
@@ -128,13 +128,14 @@ export abstract class OpenRouterBaseAdapter {
                 throw new Error(errorMessage);
             }
 
-            const models = (response.json as { data: { id: string }[] }).data
+            const models = (response.json as { id: string }[])
                 ?.map(m => m.id)
+                .filter(id => id.includes('stable-diffusion'))
                 .sort() ?? [];
-            console.log(`[OpenRouterBaseAdapter] Fetched models:`, models);
+            console.log(`[StabilityAIBaseAdapter] Fetched models:`, models);
             return models;
         } catch (error) {
-            console.error(`[OpenRouterBaseAdapter] Model fetch error:`, error);
+            console.error(`[StabilityAIBaseAdapter] Model fetch error:`, error);
             throw error;
         }
     }

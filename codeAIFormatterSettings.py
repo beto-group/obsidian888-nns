@@ -4,6 +4,7 @@ import os
 INCLUDE_FILES = [
     "src/adapters",
     "src/gateways",
+    "src/settings",
 ]
 OUTPUT_FILE = "code_dumpAdapter.txt"
 FILE_EXTENSIONS = [".ts", ".js", ".py", ".html", ".css"]

@@ -1,12 +1,12 @@
 import { App } from 'obsidian';
-import { fetchOpenAIModels } from './openai';
+import { AnthropicBaseAdapter } from '../../adapters/base/AnthropicBaseAdapter';
+import { GeminiBaseAdapter } from '../../adapters/base/GeminiBaseAdapter';
+import { GrokBaseAdapter } from '../../adapters/base/GrokBaseAdapter';
+import { GroqBaseAdapter } from '../../adapters/base/GroqBaseAdapter';
+import { OpenAIBaseAdapter } from '../../adapters/base/OpenAIBaseAdapter';
+import { OpenRouterBaseAdapter } from '../../adapters/base/OpenRouterBaseAdapter';
+import { StabilityAIBaseAdapter } from '../../adapters/base/StabilityAIBaseAdapter';
 import { fetchLocalModels } from './local';
-import { fetchAnthropicModels } from './anthropic';
-import { fetchGroqModels } from './groq';
-import { fetchGeminiModels } from './gemini';
-import { fetchOpenRouterModels } from './openrouter';
-import { fetchGrokModels } from './grok';
-import { fetchStabilityAIModels } from './stabilityai'; // Added Stability AI fetcher
 
 export interface ProviderMetadata {
     key: string;
@@ -16,25 +16,38 @@ export interface ProviderMetadata {
 
 export const providerMetadata: Record<string, ProviderMetadata> = {
     openai: { key: 'openai', defaultModel: 'gpt-3.5-turbo', requiresApiKey: true },
-    local: { key: 'local', defaultModel: 'llama2', requiresApiKey: false }, // Ollama
+    local: { key: 'local', defaultModel: 'llama2', requiresApiKey: false },
     anthropic: { key: 'anthropic', defaultModel: 'claude-3-opus-20240229', requiresApiKey: true },
-    groq: { key: 'groq', defaultModel: 'mixtral-8x7b-32768', requiresApiKey: true }, // GroqCloud
-    gemini: { key: 'gemini', defaultModel: 'models/gemini-pro', requiresApiKey: true }, // Google Gemini
+    groq: { key: 'groq', defaultModel: 'mixtral-8x7b-32768', requiresApiKey: true },
+    gemini: { key: 'gemini', defaultModel: 'models/gemini-pro', requiresApiKey: true },
     openrouter: { key: 'openrouter', defaultModel: 'openrouter/google/gemma-7b-it', requiresApiKey: true },
-    grok: { key: 'grok', defaultModel: 'grok-1', requiresApiKey: true }, // x.ai Grok
-    stabilityai: { key: 'stabilityai', defaultModel: 'stable-diffusion-xl-v1', requiresApiKey: true } // Stability AI
+    grok: { key: 'grok', defaultModel: 'grok-1', requiresApiKey: true },
+    stabilityai: { key: 'stabilityai', defaultModel: 'stable-diffusion-xl-v1', requiresApiKey: true }
 };
 
-// Updated FetchFunction type to accept optional apiKey and app
 type FetchFunction = (apiKey: string, app?: App) => Promise<string[]>;
 
 export const providerFetchers: Record<string, FetchFunction> = {
-    openai: fetchOpenAIModels,
+    openai: async (apiKey: string) => {
+        return await OpenAIBaseAdapter.fetchModels(apiKey);
+    },
     local: fetchLocalModels,
-    anthropic: fetchAnthropicModels,
-    groq: fetchGroqModels,
-    gemini: fetchGeminiModels,
-    openrouter: fetchOpenRouterModels,
-    grok: fetchGrokModels,
-    stabilityai: fetchStabilityAIModels // Added Stability AI fetcher
+    anthropic: async (apiKey: string) => {
+        return await AnthropicBaseAdapter.fetchModels(apiKey);
+    },
+    groq: async (apiKey: string) => {
+        return await GroqBaseAdapter.fetchModels(apiKey);
+    },
+    gemini: async (apiKey: string) => {
+        return await GeminiBaseAdapter.fetchModels(apiKey);
+    },
+    openrouter: async (apiKey: string) => {
+        return await OpenRouterBaseAdapter.fetchModels(apiKey);
+    },
+    grok: async (apiKey: string) => {
+        return await GrokBaseAdapter.fetchModels(apiKey);
+    },
+    stabilityai: async (apiKey: string) => {
+        return await StabilityAIBaseAdapter.fetchModels(apiKey);
+    }
 };

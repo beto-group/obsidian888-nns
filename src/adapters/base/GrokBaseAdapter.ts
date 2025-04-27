@@ -1,5 +1,4 @@
 import { requestUrl } from 'obsidian';
-import { fetchGrokModels } from '../../settings/providers/grok';
 
 export abstract class GrokBaseAdapter {
     protected apiKey: string;
@@ -67,7 +66,7 @@ export abstract class GrokBaseAdapter {
         const candidateModel = model || defaultModel;
 
         try {
-            const availableModels = await fetchGrokModels(this.apiKey);
+            const availableModels = await GrokBaseAdapter.fetchModels(this.apiKey);
             console.log(`[${this.constructor.name}] Available models:`, availableModels);
 
             if (availableModels.includes(candidateModel)) {
@@ -89,6 +88,50 @@ export abstract class GrokBaseAdapter {
             const finalFallback = defaultModel || fallbackModel;
             console.warn(`[${this.constructor.name}] Using fallback model due to error:`, finalFallback);
             return finalFallback;
+        }
+    }
+
+    public static async fetchModels(apiKey: string): Promise<string[]> {
+        try {
+            if (!apiKey) {
+                throw new Error(`[GrokBaseAdapter] API key is required for fetching models.`);
+            }
+            const url = 'https://api.x.ai/v1/models';
+            console.log(`[GrokBaseAdapter] Sending model fetch request:`, {
+                url,
+                headers: { Authorization: `Bearer ${apiKey.trim()}` }
+            });
+
+            const response = await requestUrl({
+                url,
+                method: 'GET',
+                headers: {
+                    Authorization: `Bearer ${apiKey.trim()}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `grok error: ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.log(`[GrokBaseAdapter] Error response body:`, errorBody);
+                    errorMessage += ` - ${errorBody}`;
+                    if (response.status === 403) {
+                        errorMessage += '. Check your API key, permissions, or account status at console.x.ai.';
+                    }
+                } catch {
+                    errorMessage += ' - Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+
+            const models = (response.json as { data: { id: string }[] }).data?.map(m => m.id).sort() ?? [];
+            console.log(`[GrokBaseAdapter] Fetched models:`, models);
+            return models;
+        } catch (error) {
+            console.error(`[GrokBaseAdapter] Model fetch error:`, error);
+            throw error;
         }
     }
 }

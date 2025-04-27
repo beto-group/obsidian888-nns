@@ -1,7 +1,5 @@
 // src/adapters/text/AnthropicTextAdapter.ts
-import { requestUrl } from 'obsidian';
 import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
-import { fetchAnthropicModels } from '../../settings/providers/anthropic';
 import { AnthropicBaseAdapter } from '../base/AnthropicBaseAdapter';
 
 export class AnthropicTextAdapter extends AnthropicBaseAdapter implements LLMAdapter {

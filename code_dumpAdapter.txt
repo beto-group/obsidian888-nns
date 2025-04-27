@@ -1,513 +1,285 @@
 
 ===== src/adapters/text/GeminiTextAdapter.ts =====
 
-import { requestUrl } from 'obsidian';
 import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
-import { fetchGeminiModels } from '../../settings/providers/gemini';
+import { GeminiBaseAdapter } from '../base/GeminiBaseAdapter';
 
-/**
- * GeminiAdapter implements the LLMAdapter interface for Google's Gemini API.
- * It supports text generation using the Gemini API endpoint.
- */
-export class GeminiAdapter implements LLMAdapter {
-  providerKey = 'gemini';
-  private fallbackModel = 'gemini-1.5-pro-latest'; // Updated to latest model
-  private apiVersions = ['v1', 'v1beta']; // Try both stable and beta
+export class GeminiTextAdapter extends GeminiBaseAdapter implements LLMAdapter {
+    private defaultModel: string;
+    private fallbackModel = 'gemini-1.5-pro-latest';
 
-  constructor(
-    private apiKey: string,
-    private defaultModel: string
-  ) {
-    console.log('[GeminiAdapter] Initialized with default model:', defaultModel);
-    console.log('[GeminiAdapter] API key provided:', this.apiKey ? '[REDACTED]' : 'None');
-  }
-
-  /**
-   * Validates the provided model by checking against available Gemini models.
-   * Returns the provided model if valid, else falls back to defaultModel or a known model.
-   */
-  private async validateModel(model?: string): Promise<string> {
-    console.log('[GeminiAdapter] Validating model:', model || 'undefined');
-    const candidateModel = model || this.defaultModel;
-
-    try {
-      const availableModels = await fetchGeminiModels(this.apiKey);
-      console.log('[GeminiAdapter] Available models:', availableModels);
-
-      // Normalize model names by removing 'models/' prefix
-      const normalizedModels = availableModels.map(m => m.replace(/^models\//, ''));
-      if (normalizedModels.includes(candidateModel)) {
-        console.log('[GeminiAdapter] Model validated:', candidateModel);
-        return candidateModel;
-      }
-
-      if (normalizedModels.includes(this.defaultModel)) {
-        console.warn(
-          '[GeminiAdapter] Invalid model provided:',
-          candidateModel,
-          'Falling back to default:',
-          this.defaultModel
-        );
-        return this.defaultModel;
-      }
-
-      if (normalizedModels.includes(this.fallbackModel)) {
-        console.warn(
-          '[GeminiAdapter] Both provided model',
-          candidateModel,
-          'and default model',
-          this.defaultModel,
-          'are invalid. Falling back to:',
-          this.fallbackModel
-        );
-        return this.fallbackModel;
-      }
-
-      console.error('[GeminiAdapter] No valid models available:', normalizedModels);
-      throw new Error('No valid Gemini models available. Check API key or API status.');
-    } catch (error) {
-      console.error('[GeminiAdapter] Error fetching available models:', error);
-      const fallback = this.defaultModel || this.fallbackModel;
-      console.warn('[GeminiAdapter] Model fetch failed, using fallback model:', fallback);
-      return fallback;
+    constructor(apiKey: string, defaultModel: string) {
+        super(apiKey);
+        this.defaultModel = defaultModel;
+        console.log('[GeminiTextAdapter] Initialized with default model:', defaultModel);
     }
-  }
 
-  /**
-   * Generates text using Google's Gemini API.
-   */
-  async generate(req: LLMRequest): Promise<LLMResponse> {
-    const model = await this.validateModel(req.model);
-    const body = {
-      contents: [
-        ...(req.systemPrompt
-          ? [{ parts: [{ text: req.systemPrompt }], role: 'system' }]
-          : []),
-        { parts: [{ text: req.prompt }], role: 'user' },
-      ],
-      generationConfig: {
-        temperature: req.temperature ?? 0.7,
-        maxOutputTokens: req.maxTokens ?? 1000,
-      },
-    };
+    async generate(req: LLMRequest): Promise<LLMResponse> {
+        const model = await this.validateModelInternal(req.model, this.defaultModel, this.fallbackModel);
 
-    let lastError: Error | null = null;
-
-    for (const apiVersion of this.apiVersions) {
-      const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent?key=${this.apiKey.trim()}`;
-
-      console.log('[GeminiAdapter] Sending request:', {
-        url,
-        apiVersion,
-        model,
-        body: {
-          contents: body.contents.map(c => ({
-            ...c,
-            parts: c.parts.map(p => ({
-              text: p.text.length > 50 ? p.text.slice(0, 50) + '...' : p.text,
-            })),
-          })),
-          generationConfig: body.generationConfig,
-        },
-        headers: { 'Content-Type': 'application/json' },
-      });
-
-      try {
-        const resp = await requestUrl({
-          url,
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(body),
-        });
-
-        if (resp.status >= 400) {
-          let errorMessage = `Gemini error ${resp.status}`;
-          let errorDetails = '';
-          try {
-            const errorBody = resp.json?.error?.message || resp.text || 'No additional details';
-            console.error('[GeminiAdapter] Error response body:', errorBody);
-            errorDetails = errorBody;
-            errorMessage += `: ${errorBody}`;
-            if (resp.status === 401) {
-              errorMessage += '. Invalid API key. Verify your Gemini API key in settings at https://aistudio.google.com/app/apikey.';
-            } else if (resp.status === 404) {
-              errorMessage += `. Model "${model}" not found or endpoint incorrect for API version ${apiVersion} (tried ${url}). Check available models, API version, or region restrictions at https://ai.google.dev/docs.`;
-            } else if (resp.status === 400) {
-              errorMessage += '. Invalid request parameters. Check prompt or model configuration.';
-            } else if (resp.status === 429) {
-              errorMessage += '. Rate limit exceeded. Try again later or check your Gemini API quota at https://aistudio.google.com/app/apikey.';
-            } else if (resp.status === 403) {
-              errorMessage += '. Check your API key permissions or account status at https://aistudio.google.com/app/apikey.';
-            } else if (resp.status >= 500) {
-              errorMessage += '. Server error at Google. Try again later or contact Google AI support.';
-            }
-          } catch {
-            errorMessage += ': Failed to parse error details';
-          }
-          lastError = new Error(errorMessage);
-          continue;
-        }
-
-        const data = resp.json as any;
-        if (
-          !data.candidates ||
-          !Array.isArray(data.candidates) ||
-          !data.candidates[0]?.content?.parts?.[0]?.text
-        ) {
-          console.error('[GeminiAdapter] Unexpected response format:', data);
-          throw new Error('Unexpected Gemini API response format');
-        }
-
-        const output = data.candidates[0].content.parts[0].text.trim();
-        const tokensUsed = data.usageMetadata?.totalTokenCount || 0;
-        console.log('[GeminiAdapter] Response received:', {
-          output: output.length > 50 ? output.slice(0, 50) + '...' : output,
-          tokensUsed,
-          model,
-          apiVersion,
-        });
-
-        return {
-          output,
-          tokensUsed,
+        const body = {
+            contents: [
+                ...(req.systemPrompt
+                    ? [{ parts: [{ text: req.systemPrompt }], role: 'system' }]
+                    : []),
+                { parts: [{ text: req.prompt }], role: 'user' },
+            ],
+            generationConfig: {
+                temperature: req.temperature ?? 0.7,
+                maxOutputTokens: req.maxTokens ?? 1000,
+            },
         };
-      } catch (error) {
-        console.error('[GeminiAdapter] Generation error for API version', apiVersion, ':', {
-          error: error.message,
-          url,
-          modelUsed: model,
-          apiKeyPresent: !!this.apiKey,
-          requestBody: body.contents.map(c => ({
-            ...c,
-            parts: c.parts.map(p => ({
-              text: p.text.length > 50 ? p.text.slice(0, 50) + '...' : p.text,
-            })),
-          })),
-        });
-        lastError = error;
-        continue;
-      }
-    }
 
-    throw lastError || new Error('All API versions failed to generate content');
-  }
+        console.log('[GeminiTextAdapter] Sending request:', {
+            endpoint: `models/${model}:generateContent`,
+            body: {
+                contents: body.contents.map(c => ({
+                    ...c,
+                    parts: c.parts.map(p => ({
+                        text: p.text.length > 50 ? p.text.slice(0, 50) + '...' : p.text,
+                    })),
+                })),
+                generationConfig: body.generationConfig,
+            },
+        });
+
+        let lastError: Error | null = null;
+
+        for (const apiVersion of this.apiVersions) {
+            try {
+                const data = await this.makeRequest(`models/${model}:generateContent`, body, 'POST', apiVersion);
+
+                if (
+                    !data.candidates ||
+                    !Array.isArray(data.candidates) ||
+                    !data.candidates[0]?.content?.parts?.[0]?.text
+                ) {
+                    console.error('[GeminiTextAdapter] Unexpected response format:', data);
+                    throw new Error('Unexpected Gemini API response format');
+                }
+
+                const output = data.candidates[0].content.parts[0].text.trim();
+                const tokensUsed = data.usageMetadata?.totalTokenCount || 0;
+
+                console.log('[GeminiTextAdapter] Response received:', {
+                    output: output.length > 50 ? output.slice(0, 50) + '...' : output,
+                    tokensUsed,
+                    model,
+                    apiVersion,
+                });
+
+                return {
+                    output,
+                    tokensUsed,
+                };
+            } catch (error) {
+                console.error('[GeminiTextAdapter] Generation error for API version', apiVersion, ':', error);
+                lastError = error;
+                continue;
+            }
+        }
+
+        throw lastError || new Error('All API versions failed to generate content');
+    }
 }
 ===== src/adapters/text/GrokTextAdapter.ts =====
 
-import { requestUrl } from 'obsidian';
 import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
-import { fetchGrokModels } from '../../settings/providers/grok';
+import { GrokBaseAdapter } from '../base/GrokBaseAdapter';
 
-/**
- * GrokAdapter implements the LLMAdapter interface for xAI's Grok API.
- * It supports text generation using the xAI API endpoint.
- */
-export class GrokAdapter implements LLMAdapter {
-  providerKey = 'grok';
-  private fallbackModel = 'grok-1'; // Safe default model for xAI Grok
+export class GrokTextAdapter extends GrokBaseAdapter implements LLMAdapter {
+    private defaultModel: string;
+    private fallbackModel = 'grok-1';
 
-  constructor(
-    private apiKey: string,
-    private defaultModel: string
-  ) {
-    console.log('[GrokAdapter] Initialized with default model:', defaultModel);
-    console.log('[GrokAdapter] API key provided:', this.apiKey ? '[REDACTED]' : 'None');
-  }
-
-  /**
-   * Validates the provided model by checking against available xAI models.
-   * Returns the provided model if valid, else falls back to defaultModel or a known model.
-   */
-  private async validateModel(model?: string): Promise<string> {
-    console.log('[GrokAdapter] Validating model:', model || 'undefined');
-    const candidateModel = model || this.defaultModel;
-
-    try {
-      const availableModels = await fetchGrokModels(this.apiKey);
-      console.log('[GrokAdapter] Available models:', availableModels);
-
-      if (availableModels.includes(candidateModel)) {
-        console.log('[GrokAdapter] Model validated:', candidateModel);
-        return candidateModel;
-      }
-
-      if (availableModels.includes(this.defaultModel)) {
-        console.warn(
-          '[GrokAdapter] Invalid model provided:',
-          candidateModel,
-          'Falling back to default:',
-          this.defaultModel
-        );
-        return this.defaultModel;
-      }
-
-      if (availableModels.includes(this.fallbackModel)) {
-        console.warn(
-          '[GrokAdapter] Both provided model',
-          candidateModel,
-          'and default model',
-          this.defaultModel,
-          'are invalid. Falling back to:',
-          this.fallbackModel
-        );
-        return this.fallbackModel;
-      }
-
-      console.error('[GrokAdapter] No valid models available:', availableModels);
-      throw new Error('No valid Grok models available. Check API key or API status.');
-    } catch (error) {
-      console.error('[GrokAdapter] Error fetching available models:', error);
-      const fallback = this.defaultModel || this.fallbackModel;
-      console.warn('[GrokAdapter] Model fetch failed, using fallback model:', fallback);
-      return fallback;
+    constructor(apiKey: string, defaultModel: string) {
+        super(apiKey);
+        this.defaultModel = defaultModel;
+        console.log('[GrokTextAdapter] Initialized with default model:', defaultModel);
     }
-  }
 
-  /**
-   * Generates text using xAI's chat completions endpoint.
-   */
-  async generate(req: LLMRequest): Promise<LLMResponse> {
-    const model = await this.validateModel(req.model);
-    const body = {
-      model,
-      messages: [
-        ...(req.systemPrompt ? [{ role: 'system', content: req.systemPrompt }] : []),
-        { role: 'user', content: req.prompt },
-      ],
-      temperature: req.temperature ?? 0.7,
-      max_tokens: req.maxTokens ?? 1000,
-    };
+    async generate(req: LLMRequest): Promise<LLMResponse> {
+        const model = await this.validateModelInternal(req.model, this.defaultModel, this.fallbackModel);
 
-    console.log('[GrokAdapter] Sending request:', {
-      url: 'https://api.x.ai/v1/chat/completions',
-      body: {
-        ...body,
-        messages: body.messages.map(msg => ({
-          ...msg,
-          content: msg.content.length > 50 ? msg.content.slice(0, 50) + '...' : msg.content,
-        })),
-      },
-      headers: { Authorization: '[REDACTED]', 'Content-Type': 'application/json' },
-    });
+        const body = {
+            model,
+            messages: [
+                ...(req.systemPrompt ? [{ role: 'system', content: req.systemPrompt }] : []),
+                { role: 'user', content: req.prompt },
+            ],
+            temperature: req.temperature ?? 0.7,
+            max_tokens: req.maxTokens ?? 1000,
+        };
 
-    try {
-      const resp = await requestUrl({
-        url: 'https://api.x.ai/v1/chat/completions',
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.apiKey.trim()}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      });
+        console.log('[GrokTextAdapter] Sending request:', {
+            endpoint: 'chat/completions',
+            body: {
+                ...body,
+                messages: body.messages.map(msg => ({
+                    ...msg,
+                    content: msg.content.length > 50 ? msg.content.slice(0, 50) + '...' : msg.content,
+                })),
+            },
+        });
 
-      if (resp.status >= 400) {
-        let errorMessage = `Grok error ${resp.status}`;
         try {
-          const errorBody = resp.json?.error?.message || resp.text || 'No additional details';
-          console.error('[GrokAdapter] Error response body:', errorBody);
-          errorMessage += `: ${errorBody}`;
-          if (resp.status === 401) {
-            errorMessage += '. Invalid API key. Verify your xAI API key in settings at https://x.ai/api.';
-          } else if (resp.status === 400) {
-            errorMessage += '. Check request parameters or model validity.';
-          } else if (resp.status === 429) {
-            errorMessage += '. Rate limit exceeded. Try again later or check your xAI account at https://x.ai/api.';
-          } else if (resp.status === 403) {
-            errorMessage += '. Check your API key permissions or account status at https://x.ai/api.';
-          } else if (resp.status >= 500) {
-            errorMessage += '. Server error at xAI. Try again later or contact xAI support.';
-          }
-        } catch {
-          errorMessage += ': Failed to parse error details';
+            const data = await this.makeRequest('chat/completions', body, 'POST');
+
+            if (!data.choices || !Array.isArray(data.choices) || !data.choices[0]?.message?.content) {
+                console.error('[GrokTextAdapter] Unexpected response format:', data);
+                throw new Error('Unexpected xAI API response format');
+            }
+
+            const output = data.choices[0].message.content.trim();
+            const tokensUsed = data.usage?.total_tokens || 0;
+
+            console.log('[GrokTextAdapter] Response received:', {
+                output: output.length > 50 ? output.slice(0, 50) + '...' : output,
+                tokensUsed,
+                model,
+            });
+
+            return {
+                output,
+                tokensUsed,
+            };
+        } catch (error) {
+            console.error('[GrokTextAdapter] Generation error:', error);
+            throw error;
         }
-        throw new Error(errorMessage);
-      }
-
-      const data = resp.json as any;
-      if (!data.choices || !Array.isArray(data.choices) || !data.choices[0]?.message?.content) {
-        console.error('[GrokAdapter] Unexpected response format:', data);
-        throw new Error('Unexpected xAI API response format');
-      }
-
-      const output = data.choices[0].message.content.trim();
-      const tokensUsed = data.usage?.total_tokens || 0;
-      console.log('[GrokAdapter] Response received:', {
-        output: output.length > 50 ? output.slice(0, 50) + '...' : output,
-        tokensUsed,
-        model: data.model,
-      });
-
-      return {
-        output,
-        tokensUsed,
-      };
-    } catch (error) {
-      console.error('[GrokAdapter] Generation error:', error);
-      throw error;
     }
-  }
 }
 ===== src/adapters/text/OpenAITextAdapter.ts =====
 
-// src/adapters/text/OpenAIAdapter.ts
-import { requestUrl } from 'obsidian';
-import type {
-  LLMAdapter,
-  LLMRequest,
-  LLMResponse
-} from '../../core/Adapter';
+import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
+import { OpenAIBaseAdapter } from '../base/OpenAIBaseAdapter';
 
-export class OpenAIAdapter implements LLMAdapter {
-  providerKey = 'openai';
+export class OpenAITextAdapter extends OpenAIBaseAdapter implements LLMAdapter {
+    private defaultModel: string;
+    private fallbackModel = 'gpt-3.5-turbo';
 
-  constructor(
-    private apiKey: string,
-    private defaultModel: string
-  ) {}
-
-  async generate(req: LLMRequest): Promise<LLMResponse> {
-    const model = req.model ?? this.defaultModel;
-    const body = {
-      model,
-      messages: [
-        { role: 'system', content: req.systemPrompt ?? '' },
-        { role: 'user', content: req.prompt }
-      ],
-      temperature: req.temperature,
-      max_tokens: req.maxTokens
-    };
-
-    const resp = await requestUrl({
-      url: 'https://api.openai.com/v1/chat/completions',
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
-    });
-
-    if (resp.status >= 400) {
-      throw new Error(
-        `OpenAI error ${resp.status}: ${resp.text}`
-      );
+    constructor(apiKey: string, defaultModel: string) {
+        super(apiKey);
+        this.defaultModel = defaultModel;
+        console.log('[OpenAITextAdapter] Initialized with default model:', defaultModel);
     }
 
-    const data = resp.json as any;
-    return {
-      output: data.choices[0].message.content.trim(),
-      tokensUsed: data.usage?.total_tokens
-    };
-  }
-}
+    async generate(req: LLMRequest): Promise<LLMResponse> {
+        const model = await this.validateModelInternal(req.model, this.defaultModel, this.fallbackModel);
 
+        const body = {
+            model,
+            messages: [
+                ...(req.systemPrompt ? [{ role: 'system', content: req.systemPrompt }] : []),
+                { role: 'user', content: req.prompt },
+            ],
+            temperature: req.temperature ?? 0.7,
+            max_tokens: req.maxTokens ?? 1000,
+        };
+
+        console.log('[OpenAITextAdapter] Sending request:', {
+            endpoint: 'chat/completions',
+            body: {
+                ...body,
+                messages: body.messages.map(msg => ({
+                    ...msg,
+                    content: msg.content.length > 50 ? msg.content.slice(0, 50) + '...' : msg.content,
+                })),
+            },
+        });
+
+        try {
+            const data = await this.makeRequest('chat/completions', body, 'POST');
+
+            if (!data.choices || !Array.isArray(data.choices) || !data.choices[0]?.message?.content) {
+                console.error('[OpenAITextAdapter] Unexpected response format:', data);
+                throw new Error('Unexpected OpenAI API response format');
+            }
+
+            const output = data.choices[0].message.content.trim();
+            const tokensUsed = data.usage?.total_tokens || 0;
+
+            console.log('[OpenAITextAdapter] Response received:', {
+                output: output.length > 50 ? output.slice(0, 50) + '...' : output,
+                tokensUsed,
+                model,
+            });
+
+            return {
+                output,
+                tokensUsed,
+            };
+        } catch (error) {
+            console.error('[OpenAITextAdapter] Generation error:', error);
+            throw error;
+        }
+    }
+}
 ===== src/adapters/text/OpenRouterTextAdapter.ts =====
 
-import { requestUrl } from 'obsidian';
 import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
-import { fetchOpenRouterModels } from '../../settings/providers/openrouter';
+import { OpenRouterBaseAdapter } from '../base/OpenRouterBaseAdapter';
 
-/**
- * OpenRouterAdapter implements the LLMAdapter interface for OpenRouter's API.
- * It supports text generation using the /api/v1/chat/completions endpoint.
- */
-export class OpenRouterAdapter implements LLMAdapter {
-  providerKey = 'openrouter';
-  private fallbackModel = 'x-ai/grok-beta'; // Safe default from OpenRouter
+export class OpenRouterTextAdapter extends OpenRouterBaseAdapter implements LLMAdapter {
+    private defaultModel: string;
+    private fallbackModel = 'x-ai/grok-beta';
 
-  constructor(
-    private apiKey: string,
-    private defaultModel: string
-  ) {
-    console.log('[OpenRouterAdapter] Initialized with default model:', defaultModel);
-  }
-
-  private async validateModel(model?: string): Promise<string> {
-    console.log('[OpenRouterAdapter] Validating model:', model || 'undefined');
-    const candidateModel = model || this.defaultModel;
-
-    try {
-      const availableModels = await fetchOpenRouterModels(this.apiKey);
-      console.log('[OpenRouterAdapter] Available models:', availableModels);
-
-      if (availableModels.includes(candidateModel)) {
-        console.log('[OpenRouterAdapter] Model validated:', candidateModel);
-        return candidateModel;
-      }
-
-      if (availableModels.includes(this.defaultModel)) {
-        console.warn(
-          '[OpenRouterAdapter] Invalid model provided:',
-          candidateModel,
-          'Falling back to default:',
-          this.defaultModel
-        );
-        return this.defaultModel;
-      }
-
-      if (availableModels.includes(this.fallbackModel)) {
-        console.warn(
-          '[OpenRouterAdapter] Both provided model',
-          candidateModel,
-          'and default model',
-          this.defaultModel,
-          'are invalid. Falling back to:',
-          this.fallbackModel
-        );
-        return this.fallbackModel;
-      }
-
-      console.error('[OpenRouterAdapter] No valid models available:', availableModels);
-      throw new Error('No valid OpenRouter models available. Check API key or API status.');
-    } catch (error) {
-      console.error('[OpenRouterAdapter] Error fetching available models:', error);
-      const fallback = this.defaultModel || this.fallbackModel;
-      console.warn('[OpenRouterAdapter] Model fetch failed, using fallback model:', fallback);
-      return fallback;
+    constructor(apiKey: string, defaultModel: string) {
+        super(apiKey);
+        this.defaultModel = defaultModel;
+        console.log('[OpenRouterTextAdapter] Initialized with default model:', defaultModel);
     }
-  }
 
-  async generate(req: LLMRequest): Promise<LLMResponse> {
-    const model = req.model || this.defaultModel;
-    const body = {
-      model,
-      messages: [
-        ...(req.systemPrompt ? [{ role: 'system', content: req.systemPrompt }] : []),
-        { role: 'user', content: req.prompt }
-      ],
-      temperature: req.temperature ?? 0.7,
-      max_tokens: req.maxTokens ?? 1000
-    };
-  
-    const resp = await requestUrl({
-      url: 'https://openrouter.ai/api/v1/chat/completions',
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
-    });
-  
-    const json = resp.json;
-  
-    if (!json.choices || !Array.isArray(json.choices)) {
-      console.error('[OpenRouterAdapter] Unexpected response format:', json);
-      throw new Error('Unexpected OpenRouter API response format');
+    async generate(req: LLMRequest): Promise<LLMResponse> {
+        const model = await this.validateModelInternal(req.model, this.defaultModel, this.fallbackModel);
+
+        const body = {
+            model,
+            messages: [
+                ...(req.systemPrompt ? [{ role: 'system', content: req.systemPrompt }] : []),
+                { role: 'user', content: req.prompt },
+            ],
+            temperature: req.temperature ?? 0.7,
+            max_tokens: req.maxTokens ?? 1000,
+        };
+
+        console.log('[OpenRouterTextAdapter] Sending request:', {
+            endpoint: 'chat/completions',
+            body: {
+                ...body,
+                messages: body.messages.map(msg => ({
+                    ...msg,
+                    content: msg.content.length > 50 ? msg.content.slice(0, 50) + '...' : msg.content,
+                })),
+            },
+        });
+
+        try {
+            const data = await this.makeRequest('chat/completions', body, 'POST');
+
+            if (!data.choices || !Array.isArray(data.choices) || !data.choices[0]?.message?.content) {
+                console.error('[OpenRouterTextAdapter] Unexpected response format:', data);
+                throw new Error('Unexpected OpenRouter API response format');
+            }
+
+            const output = data.choices[0].message.content.trim();
+            const tokensUsed = data.usage?.total_tokens || 0;
+
+            console.log('[OpenRouterTextAdapter] Response received:', {
+                output: output.length > 50 ? output.slice(0, 50) + '...' : output,
+                tokensUsed,
+                model,
+            });
+
+            return {
+                output,
+                tokensUsed,
+            };
+        } catch (error) {
+            console.error('[OpenRouterTextAdapter] Generation error:', error);
+            throw error;
+        }
     }
-  
-    const content = json.choices[0]?.message?.content ?? '';
-    const tokensUsed = json.usage?.total_tokens;
-  
-    return {
-      output: content,
-      tokensUsed
-    };
-  }
-}  
+}
 ===== src/adapters/text/AnthropicTextAdapter.ts =====
 
 // src/adapters/text/AnthropicTextAdapter.ts
@@ -579,181 +351,167 @@ export class AnthropicTextAdapter extends AnthropicBaseAdapter implements LLMAda
 }
 ===== src/adapters/text/GroqTextAdapter.ts =====
 
-import { requestUrl } from 'obsidian';
 import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
-import { fetchGroqModels } from '../../settings/providers/groq';
+import { GroqBaseAdapter } from '../base/GroqBaseAdapter';
 
-/**
- * GroqAdapter implements the LLMAdapter interface for Groq's API.
- * It supports text generation using the /openai/v1/chat/completions endpoint
- * and ensures compatibility with any valid Groq model by validating against available models.
- */
-export class GroqAdapter implements LLMAdapter {
-  providerKey = 'groq';
-  private fallbackModel = 'llama3-8b-8192'; // Safe default model from curl response
+export class GroqTextAdapter extends GroqBaseAdapter implements LLMAdapter {
+    private defaultModel: string;
+    private fallbackModel = 'llama3-8b-8192';
 
-  constructor(
-    private apiKey: string,
-    private defaultModel: string
-  ) {
-    console.log('[GroqAdapter] Initialized with default model:', defaultModel);
-  }
-
-  /**
-   * Validates the provided model by checking against available Groq models.
-   * Returns the provided model if valid, else falls back to defaultModel or a known model.
-   * @param model - The model to validate.
-   * @returns A valid model ID.
-   */
-  private async validateModel(model?: string): Promise<string> {
-    console.log('[GroqAdapter] Validating model:', model || 'undefined');
-
-    // If no model is provided, use the default
-    const candidateModel = model || this.defaultModel;
-
-    try {
-      const availableModels = await fetchGroqModels(this.apiKey);
-      console.log('[GroqAdapter] Available models:', availableModels);
-
-      // Check if the candidate model is in the available models
-      if (availableModels.includes(candidateModel)) {
-        console.log('[GroqAdapter] Model validated:', candidateModel);
-        return candidateModel;
-      }
-
-      // If the candidate model is invalid, check if defaultModel is valid
-      if (availableModels.includes(this.defaultModel)) {
-        console.warn(
-          '[GroqAdapter] Invalid model provided:',
-          candidateModel,
-          'Falling back to default:',
-          this.defaultModel
-        );
-        return this.defaultModel;
-      }
-
-      // If both provided and default models are invalid, fall back to a known model
-      if (availableModels.includes(this.fallbackModel)) {
-        console.warn(
-          '[GroqAdapter] Both provided model',
-          candidateModel,
-          'and default model',
-          this.defaultModel,
-          'are invalid. Falling back to:',
-          this.fallbackModel
-        );
-        return this.fallbackModel;
-      }
-
-      // If no valid models are found, throw an error
-      console.error('[GroqAdapter] No valid models available:', availableModels);
-      throw new Error('No valid Groq models available. Check API key or API status.');
-    } catch (error) {
-      console.error('[GroqAdapter] Error fetching available models:', error);
-      // If model fetch fails, fall back to defaultModel or fallbackModel
-      const fallback = this.defaultModel || this.fallbackModel;
-      console.warn('[GroqAdapter] Model fetch failed, using fallback model:', fallback);
-      return fallback;
+    constructor(apiKey: string, defaultModel: string) {
+        super(apiKey);
+        this.defaultModel = defaultModel;
+        console.log('[GroqTextAdapter] Initialized with default model:', defaultModel);
     }
-  }
 
-  /**
-   * Generates text using Groq's /openai/v1/chat/completions endpoint.
-   * Validates the model and constructs a proper request body.
-   * @param req - The LLM request containing prompt, model, and other parameters.
-   * @returns The generated text and token usage.
-   */
-  async generate(req: LLMRequest): Promise<LLMResponse> {
-    // Validate the model
-    const model = await this.validateModel(req.model);
+    async generate(req: LLMRequest): Promise<LLMResponse> {
+        const model = await this.validateModelInternal(req.model, this.defaultModel, this.fallbackModel);
 
-    // Construct the request body to match curl example
-    const body = {
-      model,
-      messages: [
-        ...(req.systemPrompt ? [{ role: 'system', content: req.systemPrompt }] : []),
-        { role: 'user', content: req.prompt },
-      ],
-      temperature: req.temperature ?? 0.7, // Default to 0.7
-      max_tokens: req.maxTokens ?? 1000, // Default to 1000
-    };
+        const body = {
+            model,
+            messages: [
+                ...(req.systemPrompt ? [{ role: 'system', content: req.systemPrompt }] : []),
+                { role: 'user', content: req.prompt },
+            ],
+            temperature: req.temperature ?? 0.7,
+            max_tokens: req.maxTokens ?? 1000,
+        };
 
-    // Log the request details (redact sensitive info)
-    console.log('[GroqAdapter] Sending request:', {
-      url: 'https://api.groq.com/openai/v1/chat/completions',
-      body: {
-        ...body,
-        messages: body.messages.map(msg => ({
-          ...msg,
-          content: msg.content.length > 50 ? msg.content.slice(0, 50) + '...' : msg.content,
-        })),
-      },
-      headers: { Authorization: '[REDACTED]', 'Content-Type': 'application/json' },
-    });
+        console.log('[GroqTextAdapter] Sending request:', {
+            endpoint: 'chat/completions',
+            body: {
+                ...body,
+                messages: body.messages.map(msg => ({
+                    ...msg,
+                    content: msg.content.length > 50 ? msg.content.slice(0, 50) + '...' : msg.content,
+                })),
+            },
+        });
 
-    try {
-      // Make the API request
-      const resp = await requestUrl({
-        url: 'https://api.groq.com/openai/v1/chat/completions',
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.apiKey.trim()}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      });
-
-      // Handle HTTP errors
-      if (resp.status >= 400) {
-        let errorMessage = `Groq error ${resp.status}`;
         try {
-          const errorBody = resp.json?.error?.message || resp.text || 'No additional details';
-          console.error('[GroqAdapter] Error response body:', errorBody);
-          errorMessage += `: ${errorBody}`;
-          if (resp.status === 401) {
-            errorMessage += '. Invalid API key. Please verify your Groq API key in settings.';
-          } else if (resp.status === 400) {
-            errorMessage += '. Check request parameters or model validity.';
-          } else if (resp.status === 403) {
-            errorMessage += '. Check your API key, permissions, or account status at console.groq.com.';
-          } else if (resp.status === 429) {
-            errorMessage += '. Rate limit exceeded. Try again later or check your Groq account.';
-          }
-        } catch {
-          errorMessage += ': Failed to parse error details';
+            const data = await this.makeRequest('chat/completions', body, 'POST');
+
+            if (!data.choices || !Array.isArray(data.choices) || !data.choices[0]?.message?.content) {
+                console.error('[GroqTextAdapter] Unexpected response format:', data);
+                throw new Error('Unexpected Groq API response format');
+            }
+
+            const output = data.choices[0].message.content.trim();
+            const tokensUsed = data.usage?.total_tokens || 0;
+
+            console.log('[GroqTextAdapter] Response received:', {
+                output: output.length > 50 ? output.slice(0, 50) + '...' : output,
+                tokensUsed,
+                model,
+            });
+
+            return {
+                output,
+                tokensUsed,
+            };
+        } catch (error) {
+            console.error('[GroqTextAdapter] Generation error:', error);
+            throw error;
         }
-        throw new Error(errorMessage);
-      }
-
-      // Parse the response
-      const data = resp.json as any;
-      if (!data.choices || !Array.isArray(data.choices) || !data.choices[0]?.message?.content) {
-        console.error('[GroqAdapter] Unexpected response format:', data);
-        throw new Error('Unexpected Groq API response format');
-      }
-
-      // Return the generated text and token usage
-      const output = data.choices[0].message.content.trim();
-      const tokensUsed = data.usage?.total_tokens || 0;
-      console.log('[GroqAdapter] Response received:', {
-        output: output.length > 50 ? output.slice(0, 50) + '...' : output,
-        tokensUsed,
-        model: data.model, // Log the actual model used
-      });
-
-      return {
-        output,
-        tokensUsed,
-      };
-    } catch (error) {
-      console.error('[GroqAdapter] Generation error:', error);
-      throw error; // Re-throw to be handled by AiConsoleModal
     }
-  }
 }
 ===== src/adapters/base/OpenRouterBaseAdapter.ts =====
 
 
+import { requestUrl } from 'obsidian';
+import { fetchOpenRouterModels } from '../../settings/providers/openrouter';
+
+export abstract class OpenRouterBaseAdapter {
+    protected apiKey: string;
+    public providerKey = 'openrouter';
+
+    constructor(apiKey: string) {
+        if (!apiKey) {
+            throw new Error(`[${this.constructor.name}] API key is required.`);
+        }
+        this.apiKey = apiKey.trim();
+        console.log(`[${this.constructor.name}] Initialized for provider: ${this.providerKey}`);
+        console.log(`[${this.constructor.name}] API key provided: [REDACTED]`);
+    }
+
+    protected async makeRequest(endpoint: string, body: any, method: 'POST' | 'GET' = 'POST'): Promise<any> {
+        const url = `https://openrouter.ai/api/v1/${endpoint}`;
+        console.log(`[${this.constructor.name}] Sending ${method} request to ${url}`);
+
+        try {
+            const response = await requestUrl({
+                url,
+                method,
+                headers: {
+                    Authorization: `Bearer ${this.apiKey}`,
+                    'Content-Type': 'application/json',
+                },
+                body: method === 'POST' ? JSON.stringify(body) : undefined,
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `${this.providerKey} error ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.error(`[${this.constructor.name}] Error response body:`, errorBody);
+                    errorMessage += `: ${errorBody}`;
+                    if (response.status === 401) {
+                        errorMessage += '. Invalid API key. Verify your OpenRouter API key in settings at https://openrouter.ai/keys.';
+                    } else if (response.status === 400) {
+                        errorMessage += '. Check request parameters or model validity.';
+                    } else if (response.status === 429) {
+                        errorMessage += '. Rate limit exceeded. Try again later or check your OpenRouter account at https://openrouter.ai/keys.';
+                    } else if (response.status === 403) {
+                        errorMessage += '. Check your API key permissions or account status at https://openrouter.ai/keys.';
+                    } else if (response.status >= 500) {
+                        errorMessage += '. Server error at OpenRouter. Try again later or contact OpenRouter support.';
+                    }
+                } catch (parseError) {
+                    errorMessage += ': Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+            return response.json;
+        } catch (error) {
+            console.error(`[${this.constructor.name}] API request failed:`, error);
+            throw error;
+        }
+    }
+
+    protected async validateModelInternal(
+        model: string | undefined,
+        defaultModel: string,
+        fallbackModel: string
+    ): Promise<string> {
+        console.log(`[${this.constructor.name}] Validating model: ${model || 'undefined'} (default: ${defaultModel}, fallback: ${fallbackModel})`);
+        const candidateModel = model || defaultModel;
+
+        try {
+            const availableModels = await fetchOpenRouterModels(this.apiKey);
+            console.log(`[${this.constructor.name}] Available models:`, availableModels);
+
+            if (availableModels.includes(candidateModel)) {
+                console.log(`[${this.constructor.name}] Model validated:`, candidateModel);
+                return candidateModel;
+            }
+            if (availableModels.includes(defaultModel)) {
+                console.warn(`[${this.constructor.name}] Invalid model '${candidateModel}', falling back to default '${defaultModel}'`);
+                return defaultModel;
+            }
+            if (availableModels.includes(fallbackModel)) {
+                console.warn(`[${this.constructor.name}] Invalid models '${candidateModel}' and '${defaultModel}', falling back to known '${fallbackModel}'`);
+                return fallbackModel;
+            }
+            console.error(`[${this.constructor.name}] No valid models available from list:`, availableModels);
+            throw new Error(`No valid ${this.providerKey} models available.`);
+        } catch (error) {
+            console.error(`[${this.constructor.name}] Error fetching/validating models:`, error);
+            const finalFallback = defaultModel || fallbackModel;
+            console.warn(`[${this.constructor.name}] Using fallback model due to error:`, finalFallback);
+            return finalFallback;
+        }
+    }
+}
 ===== src/adapters/base/AnthropicBaseAdapter.ts =====
 
 // src/adapters/base/AnthropicBaseAdapter.ts
@@ -849,16 +607,391 @@ export abstract class AnthropicBaseAdapter {
 import type { LLMRequest, LLMResponse } from '../../core/Adapter';
 ===== src/adapters/base/GrokBaseAdapter.ts =====
 
+import { requestUrl } from 'obsidian';
+import { fetchGrokModels } from '../../settings/providers/grok';
 
+export abstract class GrokBaseAdapter {
+    protected apiKey: string;
+    public providerKey = 'grok';
+
+    constructor(apiKey: string) {
+        if (!apiKey) {
+            throw new Error(`[${this.constructor.name}] API key is required.`);
+        }
+        this.apiKey = apiKey.trim();
+        console.log(`[${this.constructor.name}] Initialized for provider: ${this.providerKey}`);
+        console.log(`[${this.constructor.name}] API key provided: [REDACTED]`);
+    }
+
+    protected async makeRequest(endpoint: string, body: any, method: 'POST' | 'GET' = 'POST'): Promise<any> {
+        const url = `https://api.x.ai/v1/${endpoint}`;
+        console.log(`[${this.constructor.name}] Sending ${method} request to ${url}`);
+
+        try {
+            const response = await requestUrl({
+                url,
+                method,
+                headers: {
+                    Authorization: `Bearer ${this.apiKey}`,
+                    'Content-Type': 'application/json',
+                },
+                body: method === 'POST' ? JSON.stringify(body) : undefined,
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `${this.providerKey} error ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.error(`[${this.constructor.name}] Error response body:`, errorBody);
+                    errorMessage += `: ${errorBody}`;
+                    if (response.status === 401) {
+                        errorMessage += '. Invalid API key. Verify your xAI API key in settings at https://x.ai/api.';
+                    } else if (response.status === 400) {
+                        errorMessage += '. Check request parameters or model validity.';
+                    } else if (response.status === 429) {
+                        errorMessage += '. Rate limit exceeded. Try again later or check your xAI account at https://x.ai/api.';
+                    } else if (response.status === 403) {
+                        errorMessage += '. Check your API key permissions or account status at https://x.ai/api.';
+                    } else if (response.status >= 500) {
+                        errorMessage += '. Server error at xAI. Try again later or contact xAI support.';
+                    }
+                } catch (parseError) {
+                    errorMessage += ': Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+            return response.json;
+        } catch (error) {
+            console.error(`[${this.constructor.name}] API request failed:`, error);
+            throw error;
+        }
+    }
+
+    protected async validateModelInternal(
+        model: string | undefined,
+        defaultModel: string,
+        fallbackModel: string
+    ): Promise<string> {
+        console.log(`[${this.constructor.name}] Validating model: ${model || 'undefined'} (default: ${defaultModel}, fallback: ${fallbackModel})`);
+        const candidateModel = model || defaultModel;
+
+        try {
+            const availableModels = await fetchGrokModels(this.apiKey);
+            console.log(`[${this.constructor.name}] Available models:`, availableModels);
+
+            if (availableModels.includes(candidateModel)) {
+                console.log(`[${this.constructor.name}] Model validated:`, candidateModel);
+                return candidateModel;
+            }
+            if (availableModels.includes(defaultModel)) {
+                console.warn(`[${this.constructor.name}] Invalid model '${candidateModel}', falling back to default '${defaultModel}'`);
+                return defaultModel;
+            }
+            if (availableModels.includes(fallbackModel)) {
+                console.warn(`[${this.constructor.name}] Invalid models '${candidateModel}' and '${defaultModel}', falling back to known '${fallbackModel}'`);
+                return fallbackModel;
+            }
+            console.error(`[${this.constructor.name}] No valid models available from list:`, availableModels);
+            throw new Error(`No valid ${this.providerKey} models available.`);
+        } catch (error) {
+            console.error(`[${this.constructor.name}] Error fetching/validating models:`, error);
+            const finalFallback = defaultModel || fallbackModel;
+            console.warn(`[${this.constructor.name}] Using fallback model due to error:`, finalFallback);
+            return finalFallback;
+        }
+    }
+}
 ===== src/adapters/base/GeminiBaseAdapter.ts =====
 
+import { requestUrl } from 'obsidian';
+import { fetchGeminiModels } from '../../settings/providers/gemini';
 
+export abstract class GeminiBaseAdapter {
+    protected apiKey: string;
+    protected apiVersions = ['v1', 'v1beta'];
+    public providerKey = 'gemini';
+
+    constructor(apiKey: string) {
+        if (!apiKey) {
+            throw new Error(`[${this.constructor.name}] API key is required.`);
+        }
+        this.apiKey = apiKey.trim();
+        console.log(`[${this.constructor.name}] Initialized for provider: ${this.providerKey}`);
+        console.log(`[${this.constructor.name}] API key provided: [REDACTED]`);
+    }
+
+    protected async makeRequest(endpoint: string, body: any, method: 'POST' | 'GET' = 'POST', apiVersion: string = 'v1'): Promise<any> {
+        const url = `https://generativelanguage.googleapis.com/${apiVersion}/${endpoint}?key=${this.apiKey}`;
+        console.log(`[${this.constructor.name}] Sending ${method} request to ${url}`);
+
+        try {
+            const response = await requestUrl({
+                url,
+                method,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: method === 'POST' ? JSON.stringify(body) : undefined,
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `${this.providerKey} error ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.error(`[${this.constructor.name}] Error response body:`, errorBody);
+                    errorMessage += `: ${errorBody}`;
+                    if (response.status === 401) {
+                        errorMessage += '. Invalid API key. Verify your Gemini API key in settings at https://aistudio.google.com/app/apikey.';
+                    } else if (response.status === 404) {
+                        errorMessage += `. Endpoint incorrect for API version ${apiVersion} (tried ${url}). Check available models or region restrictions at https://ai.google.dev/docs.`;
+                    } else if (response.status === 400) {
+                        errorMessage += '. Invalid request parameters. Check prompt or model configuration.';
+                    } else if (response.status === 429) {
+                        errorMessage += '. Rate limit exceeded. Try again later or check your Gemini API quota at https://aistudio.google.com/app/apikey.';
+                    } else if (response.status === 403) {
+                        errorMessage += '. Check your API key permissions or account status at https://aistudio.google.com/app/apikey.';
+                    } else if (response.status >= 500) {
+                        errorMessage += '. Server error at Google. Try again later or contact Google AI support.';
+                    }
+                } catch (parseError) {
+                    errorMessage += ': Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+            return response.json;
+        } catch (error) {
+            console.error(`[${this.constructor.name}] API request failed:`, error);
+            throw error;
+        }
+    }
+
+    protected async validateModelInternal(
+        model: string | undefined,
+        defaultModel: string,
+        fallbackModel: string
+    ): Promise<string> {
+        console.log(`[${this.constructor.name}] Validating model: ${model || 'undefined'} (default: ${defaultModel}, fallback: ${fallbackModel})`);
+        const candidateModel = model || defaultModel;
+
+        try {
+            const availableModels = await fetchGeminiModels(this.apiKey);
+            console.log(`[${this.constructor.name}] Available models:`, availableModels);
+
+            const normalizedModels = availableModels.map(m => m.replace(/^models\//, ''));
+            if (normalizedModels.includes(candidateModel)) {
+                console.log(`[${this.constructor.name}] Model validated:`, candidateModel);
+                return candidateModel;
+            }
+            if (normalizedModels.includes(defaultModel)) {
+                console.warn(`[${this.constructor.name}] Invalid model '${candidateModel}', falling back to default '${defaultModel}'`);
+                return defaultModel;
+            }
+            if (normalizedModels.includes(fallbackModel)) {
+                console.warn(`[${this.constructor.name}] Invalid models '${candidateModel}' and '${defaultModel}', falling back to known '${fallbackModel}'`);
+                return fallbackModel;
+            }
+            console.error(`[${this.constructor.name}] No valid models available from list:`, normalizedModels);
+            throw new Error(`No valid ${this.providerKey} models available.`);
+        } catch (error) {
+            console.error(`[${this.constructor.name}] Error fetching/validating models:`, error);
+            const finalFallback = defaultModel || fallbackModel;
+            console.warn(`[${this.constructor.name}] Using fallback model due to error:`, finalFallback);
+            return finalFallback;
+        }
+    }
+}
 ===== src/adapters/base/OpenAIBaseAdapter.ts =====
 
+import { requestUrl } from 'obsidian';
+import { fetchOpenAIModels } from '../../settings/providers/openai';
 
+export abstract class OpenAIBaseAdapter {
+    protected apiKey: string;
+    public providerKey = 'openai';
+
+    constructor(apiKey: string) {
+        if (!apiKey) {
+            throw new Error(`[${this.constructor.name}] API key is required.`);
+        }
+        this.apiKey = apiKey.trim();
+        console.log(`[${this.constructor.name}] Initialized for provider: ${this.providerKey}`);
+        console.log(`[${this.constructor.name}] API key provided: [REDACTED]`);
+    }
+
+    protected async makeRequest(endpoint: string, body: any, method: 'POST' | 'GET' = 'POST'): Promise<any> {
+        const url = `https://api.openai.com/v1/${endpoint}`;
+        console.log(`[${this.constructor.name}] Sending ${method} request to ${url}`);
+
+        try {
+            const response = await requestUrl({
+                url,
+                method,
+                headers: {
+                    Authorization: `Bearer ${this.apiKey}`,
+                    'Content-Type': 'application/json',
+                },
+                body: method === 'POST' ? JSON.stringify(body) : undefined,
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `${this.providerKey} error ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.error(`[${this.constructor.name}] Error response body:`, errorBody);
+                    errorMessage += `: ${errorBody}`;
+                    if (response.status === 401) {
+                        errorMessage += '. Invalid API key. Verify your OpenAI API key in settings at https://platform.openai.com/account/api-keys.';
+                    } else if (response.status === 400) {
+                        errorMessage += '. Check request parameters or model validity.';
+                    } else if (response.status === 429) {
+                        errorMessage += '. Rate limit exceeded. Try again later or check your OpenAI account at https://platform.openai.com/account/billing.';
+                    } else if (response.status === 403) {
+                        errorMessage += '. Check your API key permissions or account status at https://platform.openai.com/account/api-keys.';
+                    } else if (response.status >= 500) {
+                        errorMessage += '. Server error at OpenAI. Try again later or contact OpenAI support.';
+                    }
+                } catch (parseError) {
+                    errorMessage += ': Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+            return response.json;
+        } catch (error) {
+            console.error(`[${this.constructor.name}] API request failed:`, error);
+            throw error;
+        }
+    }
+
+    protected async validateModelInternal(
+        model: string | undefined,
+        defaultModel: string,
+        fallbackModel: string
+    ): Promise<string> {
+        console.log(`[${this.constructor.name}] Validating model: ${model || 'undefined'} (default: ${defaultModel}, fallback: ${fallbackModel})`);
+        const candidateModel = model || defaultModel;
+
+        try {
+            const availableModels = await fetchOpenAIModels(this.apiKey);
+            console.log(`[${this.constructor.name}] Available models:`, availableModels);
+
+            if (availableModels.includes(candidateModel)) {
+                console.log(`[${this.constructor.name}] Model validated:`, candidateModel);
+                return candidateModel;
+            }
+            if (availableModels.includes(defaultModel)) {
+                console.warn(`[${this.constructor.name}] Invalid model '${candidateModel}', falling back to default '${defaultModel}'`);
+                return defaultModel;
+            }
+            if (availableModels.includes(fallbackModel)) {
+                console.warn(`[${this.constructor.name}] Invalid models '${candidateModel}' and '${defaultModel}', falling back to known '${fallbackModel}'`);
+                return fallbackModel;
+            }
+            console.error(`[${this.constructor.name}] No valid models available from list:`, availableModels);
+            throw new Error(`No valid ${this.providerKey} models available.`);
+        } catch (error) {
+            console.error(`[${this.constructor.name}] Error fetching/validating models:`, error);
+            const finalFallback = defaultModel || fallbackModel;
+            console.warn(`[${this.constructor.name}] Using fallback model due to error:`, finalFallback);
+            return finalFallback;
+        }
+    }
+}
 ===== src/adapters/base/GroqBaseAdapter.ts =====
 
+import { requestUrl } from 'obsidian';
+import { fetchGroqModels } from '../../settings/providers/groq';
 
+export abstract class GroqBaseAdapter {
+    protected apiKey: string;
+    public providerKey = 'groq';
+
+    constructor(apiKey: string) {
+        if (!apiKey) {
+            throw new Error(`[${this.constructor.name}] API key is required.`);
+        }
+        this.apiKey = apiKey.trim();
+        console.log(`[${this.constructor.name}] Initialized for provider: ${this.providerKey}`);
+        console.log(`[${this.constructor.name}] API key provided: [REDACTED]`);
+    }
+
+    protected async makeRequest(endpoint: string, body: any, method: 'POST' | 'GET' = 'POST'): Promise<any> {
+        const url = `https://api.groq.com/openai/v1/${endpoint}`;
+        console.log(`[${this.constructor.name}] Sending ${method} request to ${url}`);
+
+        try {
+            const response = await requestUrl({
+                url,
+                method,
+                headers: {
+                    Authorization: `Bearer ${this.apiKey}`,
+                    'Content-Type': 'application/json',
+                },
+                body: method === 'POST' ? JSON.stringify(body) : undefined,
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `${this.providerKey} error ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.error(`[${this.constructor.name}] Error response body:`, errorBody);
+                    errorMessage += `: ${errorBody}`;
+                    if (response.status === 401) {
+                        errorMessage += '. Invalid API key. Please verify your Groq API key in settings.';
+                    } else if (response.status === 400) {
+                        errorMessage += '. Check request parameters or model validity.';
+                    } else if (response.status === 403) {
+                        errorMessage += '. Check your API key, permissions, or account status at console.groq.com.';
+                    } else if (response.status === 429) {
+                        errorMessage += '. Rate limit exceeded. Try again later or check your Groq account.';
+                    } else if (response.status >= 500) {
+                        errorMessage += '. Server error at Groq. Try again later or contact Groq support.';
+                    }
+                } catch (parseError) {
+                    errorMessage += ': Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+            return response.json;
+        } catch (error) {
+            console.error(`[${this.constructor.name}] API request failed:`, error);
+            throw error;
+        }
+    }
+
+    protected async validateModelInternal(
+        model: string | undefined,
+        defaultModel: string,
+        fallbackModel: string
+    ): Promise<string> {
+        console.log(`[${this.constructor.name}] Validating model: ${model || 'undefined'} (default: ${defaultModel}, fallback: ${fallbackModel})`);
+        const candidateModel = model || defaultModel;
+
+        try {
+            const availableModels = await fetchGroqModels(this.apiKey);
+            console.log(`[${this.constructor.name}] Available models:`, availableModels);
+
+            if (availableModels.includes(candidateModel)) {
+                console.log(`[${this.constructor.name}] Model validated:`, candidateModel);
+                return candidateModel;
+            }
+            if (availableModels.includes(defaultModel)) {
+                console.warn(`[${this.constructor.name}] Invalid model '${candidateModel}', falling back to default '${defaultModel}'`);
+                return defaultModel;
+            }
+            if (availableModels.includes(fallbackModel)) {
+                console.warn(`[${this.constructor.name}] Invalid models '${candidateModel}' and '${defaultModel}', falling back to known '${fallbackModel}'`);
+                return fallbackModel;
+            }
+            console.error(`[${this.constructor.name}] No valid models available from list:`, availableModels);
+            throw new Error(`No valid ${this.providerKey} models available.`);
+        } catch (error) {
+            console.error(`[${this.constructor.name}] Error fetching/validating models:`, error);
+            const finalFallback = defaultModel || fallbackModel;
+            console.warn(`[${this.constructor.name}] Using fallback model due to error:`, finalFallback);
+            return finalFallback;
+        }
+    }
+}
 ===== src/gateways/ImageGateway.ts =====
 
 
@@ -868,12 +1001,12 @@ import type { SecretsManager } from '../utils/secrets';
 import type { MyPluginSettings } from '../settings/types';
 import { providerMetadata } from '../settings/providers/index';
 import type { LLMAdapter, LLMRequest } from '../core/Adapter';
-import { OpenAIAdapter } from '../adapters/text/OpenAITextAdapter';
+import { OpenAITextAdapter } from '../adapters/text/OpenAITextAdapter';
 import { AnthropicTextAdapter } from '../adapters/text/AnthropicTextAdapter'; // Fixed import
-import { GrokAdapter } from '../adapters/text/GrokTextAdapter';
-import { OpenRouterAdapter } from '../adapters/text/OpenRouterTextAdapter';
-import { GeminiAdapter } from '../adapters/text/GeminiTextAdapter';
-import { GroqAdapter } from '../adapters/text/GroqTextAdapter';
+import { GrokTextAdapter } from '../adapters/text/GrokTextAdapter';
+import { OpenRouterTextAdapter } from '../adapters/text/OpenRouterTextAdapter';
+import { GeminiTextAdapter } from '../adapters/text/GeminiTextAdapter';
+import { GroqTextAdapter } from '../adapters/text/GroqTextAdapter';
 
 export class TextGateway {
   private adapters: Record<string, LLMAdapter> = {};
@@ -910,22 +1043,22 @@ export class TextGateway {
       let adapter: LLMAdapter;
       switch (key) {
         case 'openai':
-          adapter = new OpenAIAdapter(apiKey!, model);
+          adapter = new OpenAITextAdapter(apiKey!, model);
           break;
         case 'anthropic':
           adapter = new AnthropicTextAdapter(apiKey!, model);
           break;
         case 'grok':
-          adapter = new GrokAdapter(apiKey!, model);
+          adapter = new GrokTextAdapter(apiKey!, model);
           break;
         case 'openrouter':
-          adapter = new OpenRouterAdapter(apiKey!, model);
+          adapter = new OpenRouterTextAdapter(apiKey!, model);
           break;
         case 'gemini':
-          adapter = new GeminiAdapter(apiKey!, model);
+          adapter = new GeminiTextAdapter(apiKey!, model);
           break;
         case 'groq':
-          adapter = new GroqAdapter(apiKey!, model);
+          adapter = new GroqTextAdapter(apiKey!, model);
           break;
         default:
           console.warn(`[TextGateway] Unsupported provider: ${key}`);
@@ -975,3 +1108,1195 @@ export class TextGateway {
 
 ===== src/gateways/ThreeDGateway.ts =====
 
+
+===== src/settings/validation.ts =====
+
+import { Notice } from 'obsidian'; // Added import for Notice
+import { SampleSettingTab } from './settings';
+import { providerFetchers, providerMetadata } from './providers/index';
+import { ensureProviderConfigExists } from './utils'; // Fixed import
+
+export async function validateAllStoredSecrets(tab: SampleSettingTab): Promise<void> {
+    if (tab.isValidating) return;
+    tab.isValidating = true;
+    console.log("[Settings] Starting initial validation of all stored secrets...");
+
+    tab.workingProviders.clear();
+    tab.availableModels = {};
+
+    let storedKeys: string[] = [];
+    try {
+        storedKeys = await tab.secrets.listSecrets();
+        console.log("[Settings] Stored secret keys found:", storedKeys);
+    } catch (error) {
+        console.error("[Settings] Failed to list secrets during validation:", error);
+        tab.isValidating = false;
+        return;
+    }
+
+    let settingsChanged = false;
+
+    const validationPromises = Object.keys(providerMetadata).map(async (providerKey) => {
+        const meta = providerMetadata[providerKey];
+        const requiresApiKey = meta.requiresApiKey;
+        const hasStoredSecret = storedKeys.includes(providerKey);
+
+        ensureProviderConfigExists(tab, providerKey);
+
+        if (!requiresApiKey) {
+            tab.workingProviders.add(providerKey);
+            console.log(`[Settings] Added non-API-key provider: ${providerKey}`);
+            try {
+                const models = await fetchAvailableModels(tab, providerKey, undefined);
+                tab.availableModels[providerKey] = models;
+                if (models.length > 0) {
+                    const currentModel = tab.plugin.settings.providers[providerKey]?.model;
+                    if (!currentModel || !models.includes(currentModel)) {
+                        console.log(`[Settings] Resetting model for ${providerKey} to ${models[0]}`);
+                        tab.plugin.settings.providers[providerKey].model = models[0];
+                        settingsChanged = true;
+                    }
+                } else {
+                    console.warn(`[Settings] No models found for non-API-key provider: ${providerKey}`);
+                }
+            } catch (error) {
+                console.error(`[Settings] Error fetching models for non-API-key provider ${providerKey}:`, error);
+                tab.availableModels[providerKey] = [];
+            }
+            return;
+        }
+
+        if (hasStoredSecret) {
+            let apiKey: string | undefined;
+            try {
+                apiKey = await tab.secrets.getSecret(providerKey);
+            } catch (error) {
+                console.error(`[Settings] Failed to get secret for ${providerKey}:`, error);
+                return;
+            }
+
+            if (apiKey) {
+                console.log(`[Settings] Auto-validating stored secret for: ${providerKey}`);
+                try {
+                    const models = await fetchAvailableModels(tab, providerKey, apiKey);
+                    tab.availableModels[providerKey] = models;
+
+                    if (models.length > 0) {
+                        tab.workingProviders.add(providerKey);
+                        const currentModel = tab.plugin.settings.providers[providerKey]?.model;
+                        if (!currentModel || !models.includes(currentModel)) {
+                            console.log(`[Settings] Resetting model for ${providerKey} to ${models[0]}`);
+                            tab.plugin.settings.providers[providerKey].model = models[0];
+                            settingsChanged = true;
+                        }
+                        console.log(`[Settings] Auto-validation successful for: ${providerKey}`);
+                    } else {
+                        console.log(`[Settings] Auto-validation failed for stored secret: ${providerKey}. Needs manual re-validation.`);
+                    }
+                } catch (error) {
+                    console.error(`[Settings] Auto-validation model fetch error for ${providerKey}:`, error);
+                    tab.availableModels[providerKey] = [];
+                }
+            } else {
+                console.warn(`[Settings] Secret listed for ${providerKey} but getSecret returned undefined.`);
+                tab.availableModels[providerKey] = [];
+            }
+        } else {
+            console.log(`[Settings] No stored secret found for API key provider: ${providerKey}`);
+            tab.availableModels[providerKey] = [];
+        }
+    });
+
+    await Promise.all(validationPromises);
+
+    if (settingsChanged) {
+        await tab.plugin.saveSettings();
+    }
+
+    tab.isValidating = false;
+    tab.hasDoneInitialValidation = true;
+    console.log("[Settings] Finished initial validation. Working providers:", Array.from(tab.workingProviders));
+
+    tab.display();
+}
+
+export async function fetchAvailableModels(
+    tab: SampleSettingTab,
+    providerKey: string,
+    apiKey: string | undefined
+): Promise<string[]> {
+    const fetcher = providerFetchers[providerKey];
+    const meta = providerMetadata[providerKey];
+
+    if (!meta) {
+        console.error(`[Settings] No metadata found for provider: ${providerKey}`);
+        return [];
+    }
+    if (meta.requiresApiKey && !apiKey) {
+        console.warn(`[Settings] fetchAvailableModels called for ${providerKey} which requires an API key, but none was provided.`);
+        return [];
+    }
+    if (!fetcher) {
+        new Notice(`Model fetching not implemented for provider: ${providerKey}`);
+        console.warn(`Model fetching not implemented for provider: ${providerKey}`);
+        return [];
+    }
+
+    try {
+        const models = await fetcher(apiKey || '', tab.plugin.app);
+        return Array.isArray(models) ? models : [];
+    } catch (err) {
+        console.error(`[${providerKey}] Model fetch error during fetchAvailableModels:`, err);
+        throw err;
+    }
+}
+===== src/settings/defaults.ts =====
+
+import { Category, ProviderConfig, MyPluginSettings } from './types';
+import { providerMetadata } from './providers/index';
+
+// Define supported providers per category
+export const categoryProviders: Record<Category, string[]> = {
+    text: ['openai', 'anthropic', 'groq', 'gemini', 'openrouter', 'grok', 'local'],
+    image: ['openai', 'stabilityai', 'grok'],
+    video: [], // No providers yet; placeholder for future
+    audio: [], // No providers yet
+    ocr: [], // No providers yet
+    '3D': ['stabilityai'] // Added 3D category with stabilityai as a provider
+};
+
+// Dynamically generate DEFAULT_SETTINGS
+export const DEFAULT_SETTINGS: MyPluginSettings = {
+    categories: {
+        text: { defaultProvider: 'openai', backupProvider: '' },
+        image: { defaultProvider: 'openai', backupProvider: '' },
+        video: { defaultProvider: '', backupProvider: '' },
+        audio: { defaultProvider: '', backupProvider: '' },
+        ocr: { defaultProvider: '', backupProvider: '' },
+        '3D': { defaultProvider: '', backupProvider: '' }
+    },
+    providers: Object.keys(providerMetadata).reduce((acc, key) => {
+        acc[key] = {
+            model: providerMetadata[key].defaultModel
+        };
+        return acc;
+    }, {} as Record<string, ProviderConfig>)
+};
+
+===== src/settings/settings.ts =====
+
+import { App, PluginSettingTab } from 'obsidian';
+import type MyPlugin from '../../main';
+import { SecretsManager } from '../utils/secrets';
+import { validateAllStoredSecrets } from './validation';
+import { renderCategoryTabs } from './components/CategoryTabs';
+import { renderProviderSelector } from './components/ProviderSelector';
+import { renderProviderConfig } from './components/ProviderConfig';
+import { ensureProviderConfigExists } from './utils';
+import { providerMetadata } from './providers/index';
+import { DEFAULT_SETTINGS } from './defaults';
+
+export class SampleSettingTab extends PluginSettingTab {
+    plugin: MyPlugin;
+    secrets: SecretsManager;
+    selectedProviderKey: string;
+    availableModels: Record<string, string[]> = {};
+    workingProviders: Set<string> = new Set();
+    isValidating: boolean = false;
+    hasDoneInitialValidation: boolean = false;
+
+    constructor(app: App, plugin: MyPlugin, secretsManager: SecretsManager) {
+        super(app, plugin);
+        this.plugin = plugin;
+        this.secrets = secretsManager;
+
+        // Initialize selected provider
+        const firstCategory = 'text';
+        const defaultProvider = this.plugin.settings.categories[firstCategory].defaultProvider;
+        if (defaultProvider && providerMetadata[defaultProvider]) {
+            this.selectedProviderKey = defaultProvider;
+        } else if (Object.keys(providerMetadata).length > 0) {
+            this.selectedProviderKey = Object.keys(providerMetadata)[0];
+        } else {
+            this.selectedProviderKey = '';
+        }
+
+        if (this.selectedProviderKey) {
+            ensureProviderConfigExists(this, this.selectedProviderKey);
+        }
+    }
+
+    async display(): Promise<void> {
+        if (!this.hasDoneInitialValidation && !this.isValidating) {
+            setTimeout(() => validateAllStoredSecrets(this), 0);
+        }
+
+        const { containerEl } = this;
+        containerEl.empty();
+
+        containerEl.createEl('h2', { text: 'LLM Provider Settings' });
+
+        // Render category tabs
+        renderCategoryTabs(this, containerEl);
+
+        containerEl.createEl('h3', { text: 'Configure Providers' });
+
+        // Render provider selection dropdown
+        renderProviderSelector(this, containerEl);
+
+        // Render configuration for selected provider
+        if (this.selectedProviderKey && providerMetadata[this.selectedProviderKey]) {
+            renderProviderConfig(this, containerEl);
+        } else {
+            containerEl.createEl('p', { text: 'Please select a provider to configure.' });
+        }
+    }
+}
+===== src/settings/utils.ts =====
+
+import { SampleSettingTab } from './settings';
+import { providerMetadata } from './providers/index';
+import { ProviderConfig } from './types';
+
+export function ensureProviderConfigExists(tab: SampleSettingTab, providerKey: string): ProviderConfig | undefined {
+    if (!providerKey) return undefined;
+
+    const meta = providerMetadata[providerKey];
+    if (!meta) {
+        console.error(`[Settings] No metadata found for provider key: ${providerKey}`);
+        return undefined;
+    }
+
+    if (!tab.plugin.settings.providers[providerKey]) {
+        tab.plugin.settings.providers[providerKey] = {
+            model: meta.defaultModel
+        };
+        console.log(`[Settings] Added missing provider configuration for: ${providerKey}`);
+    }
+    return tab.plugin.settings.providers[providerKey];
+}
+
+export function getTabIcon(category: string): string {
+    const tabIcons: Record<string, string> = {
+        text: 'text',
+        image: 'image',
+        video: 'video',
+        audio: 'volume-2',
+        ocr: 'scan',
+        '3D': 'cube'
+    };
+    return tabIcons[category] || 'circle';
+}
+===== src/settings/types.ts =====
+
+export type Category = 'text' | 'image' | 'video' | 'audio' | 'ocr' | '3D';
+
+export interface ProviderConfig {
+    model: string;
+}
+
+export interface CategorySettings {
+    defaultProvider: string;
+    backupProvider: string;
+}
+
+export interface MyPluginSettings {
+    categories: Record<Category, CategorySettings>;
+    providers: Record<string, ProviderConfig>;
+}
+===== src/settings/providers/anthropic.ts =====
+
+import { requestUrl } from 'obsidian';
+
+// Define response types based on Anthropic API documentation
+interface AnthropicModel {
+    id: string;
+    created_at: string;
+    display_name: string;
+    type: string;
+}
+
+interface AnthropicAPIResponse {
+    data: AnthropicModel[];
+    first_id: string | null;
+    last_id: string | null;
+    has_more: boolean;
+}
+
+export async function fetchAnthropicModels(apiKey: string): Promise<string[]> {
+    const models: string[] = [];
+    let hasMore = true;
+    let afterId: string | null = null;
+    const apiVersion = '2023-06-01'; // Set to a stable, supported version
+    const limit = 100; // Increase limit to get more models in one request
+
+    try {
+        while (hasMore) {
+            const url = new URL('https://api.anthropic.com/v1/models');
+            url.searchParams.append('limit', limit.toString());
+            if (afterId) {
+                url.searchParams.append('after_id', afterId);
+            }
+
+            console.log('[Anthropic] Sending request:', {
+                url: url.toString(),
+                headers: { 'x-api-key': '[REDACTED]', 'anthropic-version': apiVersion }
+            });
+
+            const response = await requestUrl({
+                url: url.toString(),
+                method: 'GET',
+                headers: {
+                    'x-api-key': apiKey.trim(),
+                    'anthropic-version': apiVersion
+                }
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `Anthropic error: ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.log('[Anthropic] Error response body:', errorBody);
+                    errorMessage += ` - ${errorBody}`;
+                    if (response.status === 401) {
+                        errorMessage += '. Invalid API key.';
+                    }
+                } catch {
+                    errorMessage += ' - Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+
+            const data = response.json as AnthropicAPIResponse;
+            
+            if (!data.data || !Array.isArray(data.data)) {
+                console.error('[Anthropic] Unexpected response format:', data);
+                throw new Error('Unexpected API response format');
+            }
+            
+            const modelIds = data.data.map(m => m.id);
+            models.push(...modelIds);
+            
+            hasMore = data.has_more;
+            afterId = data.last_id;
+
+            console.log('[Anthropic] Fetched models:', modelIds, 'Has more:', hasMore);
+            
+            if (!hasMore || !afterId) break;
+        }
+
+        return models;
+    } catch (error) {
+        console.error('[Anthropic] Model fetch error:', error);
+        throw error;
+    }
+}
+===== src/settings/providers/openai.ts =====
+
+import { requestUrl } from 'obsidian';
+
+export async function fetchOpenAIModels(apiKey: string): Promise<string[]> {
+	try {
+		const url = 'https://api.openai.com/v1/models';
+		const response = await requestUrl({
+			url,
+			method: 'GET',
+			headers: { Authorization: `Bearer ${apiKey}` }
+		});
+
+		if (response.status >= 400) {
+			throw new Error(`OpenAI error: ${response.status} ${response.text}`);
+		}
+		return response.json.data?.map((m: any) => m.id).sort() ?? [];
+	} catch (err) {
+		console.error('[OpenAI] Model fetch error:', err);
+		throw err;
+	}
+}
+===== src/settings/providers/stabilityai.ts =====
+
+import { requestUrl } from 'obsidian';
+
+interface StabilityAIEngine {
+    id: string;
+    name: string;
+    description: string;
+    type: string;
+}
+
+interface ModelInfo {
+    id: string;
+    languages: string[];
+}
+
+interface CategorizedModels {
+    Media: ModelInfo[];
+    Language: ModelInfo[];
+    '3D': ModelInfo[];
+    Audio: ModelInfo[];
+}
+
+// Fallback list of models with categories and languages, based on the provided table
+const fallbackModels: CategorizedModels = {
+    Media: [
+        { id: 'stable-diffusion-3-5-medium', languages: ['English'] },
+        { id: 'stable-diffusion-3-5-large', languages: ['English'] },
+        { id: 'stable-diffusion-3-5-large-turbo', languages: ['English'] },
+        { id: 'stable-diffusion-3-medium', languages: ['English'] },
+        { id: 'stable-diffusion-xl-turbo', languages: ['English'] },
+        { id: 'stable-diffusion-turbo', languages: ['English'] },
+        { id: 'stable-video-diffusion-14-frame', languages: ['English'] },
+        { id: 'stable-video-diffusion-25-frame', languages: ['English'] },
+        { id: 'stable-video-diffusion-1-1', languages: ['English'] },
+        { id: 'japanese-sdxl', languages: ['Japanese'] },
+        { id: 'japanese-stable-clip', languages: ['Japanese'] },
+        // Include V1 models seen in previous API response
+        { id: 'stable-diffusion-v1-6', languages: ['English'] },
+        { id: 'stable-diffusion-xl-1024-v1-0', languages: ['English'] }
+    ],
+    Language: [
+        { id: 'stable-lm-2-12b', languages: ['English', 'Spanish', 'German', 'Italian', 'French', 'Portuguese', 'Dutch'] },
+        { id: 'stable-lm-2-1-6b', languages: ['English', 'Spanish', 'German', 'Italian', 'French', 'Portuguese', 'Dutch'] },
+        { id: 'stable-lm-zephyr-3b', languages: ['English'] },
+        { id: 'japanese-stable-lm-2-1-6b', languages: ['Japanese'] },
+        { id: 'japanese-stable-vlm', languages: ['Japanese'] },
+        { id: 'stable-code-instruct-3b', languages: ['English', 'Code'] },
+        { id: 'stable-code-3b', languages: ['English', 'Code'] }
+    ],
+    '3D': [
+        { id: 'stable-point-aware-3d', languages: ['English'] },
+        { id: 'stable-fast-3d', languages: ['English'] },
+        { id: 'stable-zero123c', languages: ['English'] },
+        { id: 'stable-video-3d', languages: ['English'] }
+    ],
+    Audio: [
+        { id: 'stable-audio-open-1-0', languages: ['English'] }
+    ]
+};
+
+// Function to map API engine types to plugin categories
+function mapEngineTypeToCategory(engineType: string, engineId: string): keyof CategorizedModels {
+    // Map based on engine type and ID patterns
+    if (engineType === 'PICTURE' || engineType === 'VIDEO' || engineId.includes('video-diffusion') || engineId.includes('sdxl') || engineId.includes('stable-diffusion')) {
+        return 'Media';
+    } else if (engineType === 'AUDIO' || engineId.includes('audio')) {
+        return 'Audio';
+    } else if (engineType === '3D' || engineId.includes('3d')) {
+        return '3D';
+    } else if (engineType === 'TEXT' || engineId.includes('lm') || engineId.includes('code')) {
+        return 'Language';
+    }
+    // Default to Media for unknown types, as most Stability AI models are image-related
+    return 'Media';
+}
+
+// Helper to merge fetched models with fallback models, avoiding duplicates
+function mergeModels(fetched: CategorizedModels, fallback: CategorizedModels): CategorizedModels {
+    const result: CategorizedModels = { Media: [], Language: [], '3D': [], Audio: [] };
+    const categories: (keyof CategorizedModels)[] = ['Media', 'Language', '3D', 'Audio'];
+
+    for (const category of categories) {
+        const fetchedIds = new Set(fetched[category].map(model => model.id));
+        const merged = [...fetched[category]];
+
+        // Add fallback models that weren't fetched
+        for (const fallbackModel of fallback[category]) {
+            if (!fetchedIds.has(fallbackModel.id)) {
+                merged.push(fallbackModel);
+            }
+        }
+
+        // Sort models by ID for consistency
+        result[category] = merged.sort((a, b) => a.id.localeCompare(b.id));
+    }
+
+    return result;
+}
+
+export async function fetchStabilityAIModels(apiKey: string): Promise<string[]> {
+    const categorizedModels: CategorizedModels = {
+        Media: [],
+        Language: [],
+        '3D': [],
+        Audio: []
+    };
+    let lastError: Error | null = null;
+
+    // Try multiple API versions to fetch models
+    const apiVersions = ['v1', 'v1beta'];
+    for (const apiVersion of apiVersions) {
+        const url = `https://api.stability.ai/${apiVersion}/engines/list`;
+        console.log('[StabilityAI] Sending request:', {
+            url,
+            headers: {
+                Authorization: '[REDACTED]',
+                'Stability-Client-ID': 'obsidian-ai-plugin',
+                'Stability-Client-Version': '1.0.0'
+            }
+        });
+
+        try {
+            const response = await requestUrl({
+                url,
+                method: 'GET',
+                headers: {
+                    Authorization: `Bearer ${apiKey.trim()}`,
+                    'Content-Type': 'application/json',
+                    'Stability-Client-ID': 'obsidian-ai-plugin',
+                    'Stability-Client-Version': '1.0.0'
+                    // Uncomment and set the Organization header if needed
+                    // 'Organization': 'org-123456'
+                }
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `Stability AI error (${apiVersion}): ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.log('[StabilityAI] Error response body:', errorBody);
+                    errorMessage += ` - ${errorBody}`;
+                    if (response.status === 401) {
+                        errorMessage += '. Invalid API key.';
+                    } else if (response.status === 500) {
+                        errorMessage += '. Server error occurred.';
+                    }
+                } catch {
+                    errorMessage += ' - Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+
+            const data = response.json as StabilityAIEngine[];
+            if (!Array.isArray(data)) {
+                console.error('[StabilityAI] Unexpected response format:', data);
+                throw new Error('Unexpected API response format');
+            }
+
+            // Categorize fetched models
+            for (const engine of data) {
+                const category = mapEngineTypeToCategory(engine.type, engine.id);
+                // Assume English as the default language unless specified in fallback
+                const modelInfo: ModelInfo = { id: engine.id, languages: ['English'] };
+                // Update languages if the model is in the fallback list
+                for (const cat of Object.keys(fallbackModels) as (keyof CategorizedModels)[]) {
+                    const fallbackModel = fallbackModels[cat].find(m => m.id === engine.id);
+                    if (fallbackModel) {
+                        modelInfo.languages = fallbackModel.languages;
+                        break;
+                    }
+                }
+                categorizedModels[category].push(modelInfo);
+            }
+
+            console.log(`[StabilityAI] Fetched models from ${apiVersion}:`, categorizedModels);
+        } catch (err) {
+            console.error(`[StabilityAI] Error for API version ${apiVersion}:`, err);
+            lastError = err;
+            continue;
+        }
+    }
+
+    // Merge with fallback models to ensure all models from the table are included
+    const finalModels = mergeModels(categorizedModels, fallbackModels);
+
+    // Log the final categorized models
+    console.log('[StabilityAI] Final categorized model list:', finalModels);
+
+    // For compatibility with the current plugin, return a flat list of all model IDs
+    // The settings redesign can use the categorized structure directly
+    const flatModelList = [
+        ...finalModels.Media,
+        ...finalModels.Language,
+        ...finalModels['3D'],
+        ...finalModels.Audio
+    ].map(model => model.id).sort();
+
+    if (flatModelList.length === 0) {
+        throw lastError || new Error('Failed to fetch models with all API versions and no fallback available');
+    }
+
+    return flatModelList;
+}
+
+// Export the categorized models for use in the settings redesign
+export function getCategorizedStabilityAIModels(): CategorizedModels {
+    // This assumes fetchStabilityAIModels has been called and cached the results
+    // For now, return the fallback models; in a real implementation, you'd cache the fetched results
+    return fallbackModels;
+}
+===== src/settings/providers/groq.ts =====
+
+import { requestUrl } from 'obsidian';
+
+export async function fetchGroqModels(apiKey: string): Promise<string[]> {
+	try {
+		const url = 'https://api.groq.com/openai/v1/models';
+		const response = await requestUrl({
+			url,
+			method: 'GET',
+			headers: { Authorization: `Bearer ${apiKey}` }
+		});
+
+		if (response.status >= 400) {
+			throw new Error(`Groq error: ${response.status} ${response.text}`);
+		}
+		return response.json.data?.map((m: any) => m.id).sort() ?? [];
+	} catch (err) {
+		console.error('[Groq] Model fetch error:', err);
+		throw err;
+	}
+}
+===== src/settings/providers/gemini.ts =====
+
+import { requestUrl } from 'obsidian';
+
+/**
+ * Interface representing the structure of a single model object
+ * returned by the Gemini API's models.list method.
+ */
+interface GeminiModel {
+  name: string; // e.g., "models/gemini-1.5-flash-001"
+  baseModelId?: string; // e.g., "gemini-1.5-flash"
+  version?: string; // e.g., "001"
+  displayName?: string; // e.g., "Gemini 1.5 Flash"
+  description?: string;
+  inputTokenLimit?: number;
+  outputTokenLimit?: number;
+  supportedGenerationMethods?: string[];
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+}
+
+/**
+ * Interface representing the overall response structure
+ * from the Gemini API's models.list method.
+ */
+interface GeminiListModelsResponse {
+  models?: GeminiModel[];
+  nextPageToken?: string; // For handling pagination if needed
+}
+
+/**
+ * Fetches the list of available models from the Google Gemini API.
+ *
+ * @param apiKey - The API key for authenticating with the Google Generative Language API.
+ * @returns A promise that resolves to an array of model names (e.g., "models/gemini-pro").
+ * @throws An error if the API request fails or returns an error status.
+ */
+/**
+ * Fetches available models from the Gemini API.
+ * Ensures model names are correctly formatted for use in generateContent endpoint.
+ */
+export async function fetchGeminiModels(apiKey: string): Promise<string[]> {
+	try {
+	  // Try v1 first, then fallback to v1beta
+	  const apiVersions = ['v1', 'v1beta'];
+	  let lastError: Error | null = null;
+  
+	  for (const apiVersion of apiVersions) {
+		const url = `https://generativelanguage.googleapis.com/${apiVersion}/models?key=${apiKey}`;
+		console.log('[fetchGeminiModels] Fetching models with URL:', url);
+  
+		try {
+		  const resp = await requestUrl({
+			url,
+			method: 'GET',
+		  });
+  
+		  if (resp.status !== 200) {
+			throw new Error(`Failed to fetch Gemini models: ${resp.status} - ${resp.text || 'No details'}`);
+		  }
+  
+		  const data = resp.json as { models: { name: string }[] };
+		  // Normalize model names by removing 'models/' prefix
+		  const models = data.models
+			.map(m => m.name.replace(/^models\//, ''))
+			.filter(m => m.startsWith('gemini')); // Only include Gemini models
+		  console.log('[fetchGeminiModels] Fetched models:', models);
+		  return models;
+		} catch (error) {
+		  console.error('[fetchGeminiModels] Error for API version', apiVersion, ':', error);
+		  lastError = error;
+		  continue;
+		}
+	  }
+  
+	  throw lastError || new Error('Failed to fetch models with all API versions');
+	} catch (error) {
+	  console.error('[fetchGeminiModels] Error:', error);
+	  return ['gemini-1.5-pro-latest', 'gemini-1.5-flash-latest']; // Fallback models
+	}
+  }
+===== src/settings/providers/grok.ts =====
+
+import { requestUrl } from 'obsidian';
+
+interface XAIModel {
+    id: string;
+    created: number;
+    object: string;
+    owned_by: string;
+}
+
+interface XAIAPIResponse {
+    data: XAIModel[];
+}
+
+export async function fetchGrokModels(apiKey: string): Promise<string[]> {
+    try {
+        const url = 'https://api.x.ai/v1/models';
+        console.log('[Grok] Sending request:', {
+            url,
+            headers: { Authorization: `Bearer ${apiKey.trim()}` }
+        });
+
+        const response = await requestUrl({
+            url,
+            method: 'GET',
+            headers: {
+                Authorization: `Bearer ${apiKey.trim()}`,
+                'Content-Type': 'application/json' // Added for compatibility
+            }
+        });
+
+        if (response.status >= 400) {
+            let errorMessage = `xAI error: ${response.status}`;
+            try {
+                const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                console.log('[Grok] Error response body:', errorBody);
+                errorMessage += ` - ${errorBody}`;
+                if (response.status === 403) {
+                    errorMessage += '. Check your API key, permissions, or account status at console.x.ai.';
+                }
+            } catch {
+                errorMessage += ' - Failed to parse error details';
+            }
+            throw new Error(errorMessage);
+        }
+
+        const models = (response.json as XAIAPIResponse).data?.map(m => m.id).sort() ?? [];
+        console.log('[Grok] Fetched models:', models);
+        return models;
+    } catch (err) {
+        console.error('[Grok] Model fetch error:', err);
+        throw err;
+    }
+}
+===== src/settings/providers/local.ts =====
+
+import { requestUrl } from 'obsidian';
+
+export async function fetchLocalModels(): Promise<string[]> {
+	try {
+		// Check if Ollama is running
+		await requestUrl({ url: 'http://localhost:11434', method: 'GET' });
+		const response = await requestUrl({ url: 'http://localhost:11434/api/tags', method: 'GET' });
+		return response.json.models?.map((m: any) => m.name).sort() ?? [];
+	} catch (err) {
+		console.error('[Local] Model fetch error:', err);
+		throw new Error("Unable to connect to Ollama at http://localhost:11434");
+	}
+}
+===== src/settings/providers/openrouter.ts =====
+
+import { requestUrl } from 'obsidian';
+
+export async function fetchOpenRouterModels(apiKey: string): Promise<string[]> {
+	try {
+		const url = 'https://openrouter.ai/api/v1/models';
+		const response = await requestUrl({
+			url,
+			method: 'GET',
+			headers: { Authorization: `Bearer ${apiKey}` }
+		});
+
+		if (response.status >= 400) {
+			throw new Error(`OpenRouter error: ${response.status} ${response.text}`);
+		}
+		return response.json.data?.map((m: any) => m.id).sort() ?? [];
+	} catch (err) {
+		console.error('[OpenRouter] Model fetch error:', err);
+		throw err;
+	}
+}
+===== src/settings/providers/index.ts =====
+
+import { App } from 'obsidian';
+import { fetchOpenAIModels } from './openai';
+import { fetchLocalModels } from './local';
+import { fetchAnthropicModels } from './anthropic';
+import { fetchGroqModels } from './groq';
+import { fetchGeminiModels } from './gemini';
+import { fetchOpenRouterModels } from './openrouter';
+import { fetchGrokModels } from './grok';
+import { fetchStabilityAIModels } from './stabilityai'; // Added Stability AI fetcher
+
+export interface ProviderMetadata {
+    key: string;
+    defaultModel: string;
+    requiresApiKey: boolean;
+}
+
+export const providerMetadata: Record<string, ProviderMetadata> = {
+    openai: { key: 'openai', defaultModel: 'gpt-3.5-turbo', requiresApiKey: true },
+    local: { key: 'local', defaultModel: 'llama2', requiresApiKey: false }, // Ollama
+    anthropic: { key: 'anthropic', defaultModel: 'claude-3-opus-20240229', requiresApiKey: true },
+    groq: { key: 'groq', defaultModel: 'mixtral-8x7b-32768', requiresApiKey: true }, // GroqCloud
+    gemini: { key: 'gemini', defaultModel: 'models/gemini-pro', requiresApiKey: true }, // Google Gemini
+    openrouter: { key: 'openrouter', defaultModel: 'openrouter/google/gemma-7b-it', requiresApiKey: true },
+    grok: { key: 'grok', defaultModel: 'grok-1', requiresApiKey: true }, // x.ai Grok
+    stabilityai: { key: 'stabilityai', defaultModel: 'stable-diffusion-xl-v1', requiresApiKey: true } // Stability AI
+};
+
+// Updated FetchFunction type to accept optional apiKey and app
+type FetchFunction = (apiKey: string, app?: App) => Promise<string[]>;
+
+export const providerFetchers: Record<string, FetchFunction> = {
+    openai: fetchOpenAIModels,
+    local: fetchLocalModels,
+    anthropic: fetchAnthropicModels,
+    groq: fetchGroqModels,
+    gemini: fetchGeminiModels,
+    openrouter: fetchOpenRouterModels,
+    grok: fetchGrokModels,
+    stabilityai: fetchStabilityAIModels // Added Stability AI fetcher
+};
+===== src/settings/components/ProviderSelector.ts =====
+
+import { SampleSettingTab } from '../settings';
+import { providerMetadata } from '../providers/index';
+import { ensureProviderConfigExists } from '../utils';
+import { Setting } from 'obsidian';
+
+export function renderProviderSelector(tab: SampleSettingTab, containerEl: HTMLElement): void {
+    new Setting(containerEl)
+        .setName('Select Provider to Configure')
+        .setDesc('Choose a provider to set its API key (if required) and model.')
+        .addDropdown(dropdown => {
+            Object.keys(providerMetadata).forEach(providerKey =>
+                dropdown.addOption(providerKey, providerKey)
+            );
+
+            if (!providerMetadata[tab.selectedProviderKey]) {
+                tab.selectedProviderKey = Object.keys(providerMetadata)[0] || '';
+            }
+
+            dropdown.setValue(tab.selectedProviderKey);
+
+            dropdown.onChange(value => {
+                tab.selectedProviderKey = value;
+                ensureProviderConfigExists(tab, tab.selectedProviderKey);
+                tab.display();
+            });
+        });
+}
+===== src/settings/components/CategoryTabs.ts =====
+
+import { SampleSettingTab } from '../settings';
+import { categoryProviders } from '../defaults';
+import { TabComponent, TabConfig } from '../../ui/components/TabComponent';
+import { getTabIcon } from '../utils';
+import { Setting, Notice } from 'obsidian';
+import { Category } from '../types';
+
+export function renderCategoryTabs(tab: SampleSettingTab, containerEl: HTMLElement): void {
+    const tabs: TabConfig[] = Object.keys(categoryProviders).map(category => ({
+        tab: {
+            id: category,
+            name: category.charAt(0).toUpperCase() + category.slice(1),
+            render: (tabContainer: HTMLElement) => renderCategoryTab(tab, tabContainer, category as Category),
+            cleanup: () => {} // No cleanup needed for static settings
+        },
+        icon: getTabIcon(category)
+    }));
+
+    const tabComponent = new TabComponent(tab.app, tabs, 'text');
+    const tabContainer = containerEl.createEl('div', { cls: 'category-tabs' });
+    tabComponent.render(tabContainer);
+}
+
+function renderCategoryTab(tab: SampleSettingTab, container: HTMLElement, category: Category) {
+    const catSettings = tab.plugin.settings.categories[category] || {
+        defaultProvider: '',
+        backupProvider: ''
+    };
+
+    // Create settings for default and backup providers
+    const createProviderDropdown = (setting: Setting, settingKey: 'defaultProvider' | 'backupProvider') => {
+        setting.addDropdown(dropdown => {
+            const validProviders = categoryProviders[category]
+                .filter(id => tab.workingProviders.has(id));
+
+            dropdown.addOption('', '--- Select ---');
+
+            if (validProviders.length === 0) {
+                dropdown.addOption('', 'No validated providers available');
+                dropdown.setDisabled(true);
+            } else {
+                validProviders.forEach(id => dropdown.addOption(id, id));
+                dropdown.setDisabled(false);
+            }
+
+            const currentValue = catSettings[settingKey];
+            dropdown.setValue(validProviders.includes(currentValue) ? currentValue : '');
+
+            dropdown.onChange(async value => {
+                const settingName = settingKey === 'defaultProvider' ? 'Default' : 'Backup';
+                if (value === '') {
+                    new Notice(`Cleared ${settingName} Provider for ${category}.`);
+                } else {
+                    new Notice(`${settingName} provider for ${category} set to ${value}`);
+                }
+                catSettings[settingKey] = value;
+                await tab.plugin.saveSettings();
+            });
+        });
+    };
+
+    const defaultProviderSetting = new Setting(container)
+        .setName(`Default Provider for ${category}`)
+        .setDesc(`Primary provider for ${category} (must be validated).`);
+    createProviderDropdown(defaultProviderSetting, 'defaultProvider');
+
+    const backupProviderSetting = new Setting(container)
+        .setName(`Backup Provider for ${category}`)
+        .setDesc(`Used if the default provider for ${category} fails (must be validated).`);
+    createProviderDropdown(backupProviderSetting, 'backupProvider');
+}
+===== src/settings/components/ProviderConfig.ts =====
+
+import { SampleSettingTab } from '../settings';
+import { providerMetadata, providerFetchers } from '../providers/index';
+import { ensureProviderConfigExists } from '../utils';
+import { fetchAvailableModels } from '../validation'; // Fixed import
+import { Setting, Notice } from 'obsidian';
+import { renderRemoveKeyButton } from './RemoveKeyButton';
+
+export function renderProviderConfig(tab: SampleSettingTab, containerEl: HTMLElement): void {
+    const selectedMeta = providerMetadata[tab.selectedProviderKey];
+    const currentConfig = ensureProviderConfigExists(tab, tab.selectedProviderKey);
+    if (!currentConfig) {
+        containerEl.createEl('p', { text: `Error: Configuration could not be created for ${tab.selectedProviderKey}.` });
+        return;
+    }
+
+    containerEl.createEl('h4', { text: `Configure: ${selectedMeta.key}` });
+
+    // --- API Key Input + Validation Button ---
+    const apiKeySetting = new Setting(containerEl);
+    const requiresApiKey = selectedMeta.requiresApiKey;
+
+    apiKeySetting.setName(`${selectedMeta.key} API Key`)
+        .setDesc(requiresApiKey
+            ? `Enter/update key and click Validate.`
+            : `This provider does not require an API key.`);
+
+    let apiKeyInput: HTMLInputElement | null = null;
+
+    if (requiresApiKey) {
+        apiKeySetting.addText(text => {
+            apiKeyInput = text.inputEl;
+            text.setPlaceholder('Enter API key here')
+                .setValue('')
+                .onChange(async value => {});
+            text.inputEl.type = 'password';
+            text.inputEl.style.width = '300px';
+        });
+    }
+
+    apiKeySetting.addExtraButton(btn => {
+        btn.setIcon('refresh-ccw')
+            .setTooltip(requiresApiKey
+                ? `Validate ${selectedMeta.key} key & fetch models`
+                : 'Fetch available models (no API key needed)')
+            .onClick(async () => {
+                let apiKeyToValidate: string | undefined = undefined;
+                const currentProvider = tab.selectedProviderKey;
+
+                if (requiresApiKey) {
+                    if (!apiKeyInput) return;
+                    apiKeyToValidate = apiKeyInput.value.trim();
+                    if (!apiKeyToValidate) {
+                        apiKeyToValidate = await tab.secrets.getSecret(currentProvider);
+                        if (!apiKeyToValidate) {
+                            new Notice(`API Key required for ${currentProvider}. Enter one or check storage.`, 5000);
+                            return;
+                        }
+                        new Notice(`Re-validating stored key for ${currentProvider}...`);
+                    } else {
+                        new Notice(`Validating new key for ${currentProvider}...`);
+                        await tab.secrets.setSecret(currentProvider, apiKeyToValidate);
+                        console.log(`[Settings] Saved new API key for ${currentProvider} before validation.`);
+                    }
+                } else {
+                    new Notice(`Fetching models for ${currentProvider}...`);
+                }
+
+                btn.setDisabled(true);
+                tab.workingProviders.delete(currentProvider);
+
+                try {
+                    const models = await fetchAvailableModels(tab, currentProvider, apiKeyToValidate);
+                    tab.availableModels[currentProvider] = models;
+
+                    if (models.length > 0) {
+                        tab.workingProviders.add(currentProvider);
+                        new Notice(`${currentProvider}: ${models.length} model(s) found. ${requiresApiKey ? 'Key validated!' : 'Models fetched!'}`, 5000);
+
+                        const config = ensureProviderConfigExists(tab, currentProvider);
+                        if (config && (!models.includes(config.model))) {
+                            config.model = models[0];
+                            new Notice(`Model reset to ${models[0]} as previous was unavailable.`, 3000);
+                            await tab.plugin.saveSettings();
+                        }
+                    } else {
+                        new Notice(`${currentProvider}: Validation failed. No models found${requiresApiKey ? ' or invalid API key' : ''}. Check console.`, 5000);
+                    }
+                } catch (error) {
+                    console.error(`[Settings] Manual validation error for ${currentProvider}:`, error);
+                    tab.availableModels[currentProvider] = [];
+                    new Notice(`${currentProvider}: Validation failed. ${error.message}`, 7000);
+                } finally {
+                    btn.setDisabled(false);
+                    tab.display();
+                }
+            });
+
+        const statusContainer = btn.extraSettingsEl.createSpan({ cls: "setting-item-description" });
+        statusContainer.style.marginLeft = "10px";
+
+        if (tab.workingProviders.has(tab.selectedProviderKey)) {
+            statusContainer.setText("✅ Valid");
+            statusContainer.style.color = "green";
+        } else if (requiresApiKey) {
+            tab.secrets.getSecret(tab.selectedProviderKey).then(storedKey => {
+                if (tab.selectedProviderKey === selectedMeta.key) {
+                    if (storedKey) {
+                        statusContainer.setText("❓ Validation Needed / Failed");
+                        statusContainer.style.color = "orange";
+                    } else {
+                        statusContainer.setText("❌ No Key Set");
+                        statusContainer.style.color = "red";
+                    }
+                }
+            }).catch(err => {
+                console.error("Error checking secret for status:", err);
+                statusContainer.setText("⚠️ Error checking key");
+                statusContainer.style.color = "red";
+            });
+        } else {
+            if (tab.availableModels[tab.selectedProviderKey]?.length > 0) {
+                statusContainer.setText("✅ Models Fetched");
+                statusContainer.style.color = "green";
+            } else {
+                statusContainer.setText("❓ Fetch Models");
+                statusContainer.style.color = "orange";
+            }
+        }
+    });
+
+    // --- Model Selection Dropdown ---
+    const modelSetting = new Setting(containerEl)
+        .setName(`${selectedMeta.key} Model`)
+        .setDesc(`Select the model for ${selectedMeta.key}. (List updated after validation)`);
+
+    modelSetting.addDropdown(dropdown => {
+        const modelOptions = tab.availableModels[tab.selectedProviderKey] ?? [];
+        const defaultModel = selectedMeta.defaultModel;
+        let optionsToShow = [...modelOptions];
+
+        const currentSelectedModel = currentConfig.model;
+        if (currentSelectedModel && !optionsToShow.includes(currentSelectedModel)) {
+            optionsToShow.push(currentSelectedModel);
+        }
+        if (optionsToShow.length === 0 && defaultModel) {
+            optionsToShow.push(defaultModel);
+        }
+
+        optionsToShow.sort();
+
+        if (optionsToShow.length === 0) {
+            dropdown.addOption('', 'No models available (Validate key/Fetch first)');
+            dropdown.setDisabled(true);
+        } else {
+            optionsToShow.forEach(m => dropdown.addOption(m, m));
+            dropdown.setDisabled(false);
+        }
+
+        dropdown.setValue(optionsToShow.includes(currentSelectedModel) ? currentSelectedModel : optionsToShow[0] || '');
+
+        dropdown.onChange(async value => {
+            currentConfig.model = value;
+            await tab.plugin.saveSettings();
+            new Notice(`${selectedMeta.key} model set to ${value}`);
+        });
+    });
+
+    // --- Display Fetched Models ---
+    const currentModels = tab.availableModels[tab.selectedProviderKey] ?? [];
+    if (currentModels.length > 0) {
+        const detailsEl = containerEl.createEl('details');
+        detailsEl.createEl('summary', { text: `View ${currentModels.length} Available Models` });
+        const listEl = detailsEl.createEl('ul', { cls: 'provider-model-list' });
+        const modelsToShow = currentModels.slice(0, 25);
+        modelsToShow.forEach(model => {
+            listEl.createEl('li', { text: model });
+        });
+        if (currentModels.length > 25) {
+            listEl.createEl('li', { text: `... and ${currentModels.length - 25} more.` });
+        }
+    }
+
+    // --- Remove Configuration Button ---
+    renderRemoveKeyButton(tab, containerEl);
+}
+===== src/settings/components/RemoveKeyButton.ts =====
+
+import { SampleSettingTab } from '../settings';
+import { providerMetadata } from '../providers/index';
+import { Setting, Notice } from 'obsidian';
+import { Category } from '../types';
+
+export function renderRemoveKeyButton(tab: SampleSettingTab, containerEl: HTMLElement): void {
+    tab.secrets.getSecret(tab.selectedProviderKey).then(storedKey => {
+        const selectedMeta = providerMetadata[tab.selectedProviderKey];
+        if (tab.selectedProviderKey === selectedMeta.key && storedKey) {
+            new Setting(containerEl)
+                .setName(`Remove ${selectedMeta.key} API Key`)
+                .setDesc(`Removes the stored API key for ${selectedMeta.key}. The model selection will be kept.`)
+                .addButton(btn => {
+                    btn.setButtonText('Remove Key')
+                        .setIcon('trash')
+                        .setWarning()
+                        .onClick(async () => {
+                            const providerToDelete = tab.selectedProviderKey;
+                            new Notice(`Removing API key for ${providerToDelete}...`);
+
+                            await tab.secrets.deleteSecret(providerToDelete);
+
+                            tab.workingProviders.delete(providerToDelete);
+                            tab.availableModels[providerToDelete] = [];
+
+                            // Reset default/backup providers for affected categories
+                            Object.keys(tab.plugin.settings.categories).forEach(category => {
+                                const catSettings = tab.plugin.settings.categories[category as Category];
+                                if (catSettings.defaultProvider === providerToDelete) {
+                                    catSettings.defaultProvider = '';
+                                    new Notice(`Default provider for ${category} cleared as its key was removed.`, 3000);
+                                }
+                                if (catSettings.backupProvider === providerToDelete) {
+                                    catSettings.backupProvider = '';
+                                    new Notice(`Backup provider for ${category} cleared as its key was removed.`, 3000);
+                                }
+                            });
+
+                            await tab.plugin.saveSettings();
+                            new Notice(`${providerToDelete} API key removed.`);
+
+                            tab.display();
+                        });
+                });
+        }
+    }).catch(err => console.error("Error checking secret for remove button:", err));
+}
