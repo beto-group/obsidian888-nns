@@ -1,6 +1,6 @@
 import type { App } from 'obsidian';
 import type { SecretsManager } from '../utils/secrets';
-import type { MyPluginSettings } from '../settings/settings';
+import type { MyPluginSettings } from '../settings/types';
 
 import { TextGateway } from '../gateways/TextGateway';
 //import { ImageGateway } from '../gateways/ImageGateway';

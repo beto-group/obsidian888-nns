@@ -1,6 +1,6 @@
 // src/ui/console/sections/ProviderSelector.ts
 import { App, Setting, Notice } from 'obsidian';
-import type { MyPluginSettings } from '../../../settings/settings';
+import type { MyPluginSettings } from '../../../settings/types';
 import type { SecretsManager } from '../../../utils/secrets';
 import { providerMetadata, providerFetchers } from '../../../settings/providers/index';
 import type { TextGateway } from '../../../gateways/TextGateway';
@@ -47,10 +47,12 @@ export class ProviderSelector {
           dropdown.addOption('', 'No providers available');
         } else {
           this.providers.forEach(p => dropdown.addOption(p, p));
-          const initial = this.settings.defaultProvider && this.providers.includes(this.settings.defaultProvider)
-            ? this.settings.defaultProvider
-            : this.providers[0];
+          const defaultProvider = this.settings.categories?.text?.defaultProvider;
+          const initial = defaultProvider && this.providers.includes(defaultProvider)
+              ? defaultProvider
+              : this.providers[0];
           dropdown.setValue(initial);
+
           dropdown.onChange(async value => {
             console.log('[ProviderSelector] Provider changed to:', value);
             await this.updateModelDropdown(value);

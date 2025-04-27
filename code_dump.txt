@@ -188,9 +188,6 @@ class SampleModal extends Modal {
     }
 }
 
-===== src/types.ts =====
-
-
 ===== src/ui/components/TabComponent.ts =====
 
 import { App, setIcon } from 'obsidian';
@@ -339,105 +336,249 @@ import { OcrConsoleTab } from './tabs/OcrConsoleTab';
 import { ThreeDConsoleTab } from './tabs/ThreeDConsoleTab';
 import { TabComponent, TabConfig } from '../components/TabComponent';
 
-interface PromptHistoryEntry {
-  provider: string;
-  model: string;
-  prompt: string;
-  output: string;
-  timestamp: string;
+// Common interface for history entries
+export interface BaseHistoryEntry {
+    provider: string;
+    model: string;
+    prompt: string;
+    timestamp: string;
 }
 
+interface PromptHistoryEntry extends BaseHistoryEntry {
+    output: string;
+}
+
+export interface ImageHistoryEntry extends BaseHistoryEntry {
+    imageUrls: string[];
+}
+
+type HistoryEntry = PromptHistoryEntry | ImageHistoryEntry;
+
 interface ConsoleTab {
-  id: string;
-  name: string;
-  icon: string;
-  render(container: HTMLElement): void;
-  cleanup(): void;
-  renderHistory?(history: PromptHistoryEntry[]): void;
+    id: string;
+    name: string;
+    icon: string;
+    render(container: HTMLElement): void;
+    cleanup(): void;
+    renderHistory?(history: HistoryEntry[]): void;
 }
 
 export class AiConsoleModal extends Modal {
-  private settings: MyPluginSettings;
-  private secrets: SecretsManager;
-  private tabs: ConsoleTab[] = [];
-  private tabComponent: TabComponent;
-  private history: PromptHistoryEntry[] = [];
-  private maxHistoryEntries = 10;
+    private settings: MyPluginSettings;
+    private secrets: SecretsManager;
+    private tabs: ConsoleTab[] = [];
+    private tabComponent: TabComponent;
+    private history: HistoryEntry[] = [];
+    private maxHistoryEntries = 10;
 
-  constructor(app: App, settings: MyPluginSettings, secrets: SecretsManager) {
-    super(app);
-    this.settings = settings;
-    this.secrets = secrets;
-    this.initializeTabs();
-    const tabConfigs: TabConfig[] = this.tabs.map(tab => ({
-      tab,
-      icon: tab.icon
-    }));
-    this.tabComponent = new TabComponent(this.app, tabConfigs, 'text');
-  }
-
-  private initializeTabs() {
-    this.tabs = [
-      new TextConsoleTab(this.app, this.settings, this.secrets, this.addToHistory.bind(this), this.renderHistory.bind(this)),
-      new ImageConsoleTab(this.app, this.settings, this.secrets),
-      new VideoConsoleTab(this.app, this.settings, this.secrets),
-      new AudioConsoleTab(this.app, this.settings, this.secrets),
-      new OcrConsoleTab(this.app, this.settings, this.secrets),
-      new ThreeDConsoleTab(this.app, this.settings, this.secrets)
-    ];
-  }
-
-  onOpen() {
-    console.log('[AiConsoleModal] Opening modal...');
-    this.titleEl.setText('AI Console Playground');
-    this.contentEl.empty();
-    const container = this.contentEl.createEl('div', { cls: 'ai-console-container' });
-    this.tabComponent.render(container);
-  }
-
-  private addToHistory(entry: PromptHistoryEntry) {
-    this.history.unshift(entry);
-    if (this.history.length > this.maxHistoryEntries) {
-      this.history.pop();
+    constructor(app: App, settings: MyPluginSettings, secrets: SecretsManager) {
+        super(app);
+        this.settings = settings;
+        this.secrets = secrets;
+        this.initializeTabs();
+        const tabConfigs: TabConfig[] = this.tabs.map(tab => ({
+            tab,
+            icon: tab.icon
+        }));
+        this.tabComponent = new TabComponent(this.app, tabConfigs, 'text');
     }
-    this.renderHistory();
-  }
 
-  public renderHistory() {
-    const activeTab = this.tabs.find(tab => tab.id === this.tabComponent.getActiveTabId());
-    if (activeTab && activeTab.renderHistory) {
-      activeTab.renderHistory(this.history);
+    private initializeTabs() {
+        this.tabs = [
+            new TextConsoleTab(this.app, this.settings, this.secrets, this.addToHistory.bind(this), this.renderHistory.bind(this)),
+            new ImageConsoleTab(this.app, this.settings, this.secrets, this.addToHistory.bind(this), this.renderHistory.bind(this)),
+            new VideoConsoleTab(this.app, this.settings, this.secrets),
+            new AudioConsoleTab(this.app, this.settings, this.secrets),
+            new OcrConsoleTab(this.app, this.settings, this.secrets),
+            new ThreeDConsoleTab(this.app, this.settings, this.secrets)
+        ];
     }
-  }
 
-  onClose() {
-    this.tabComponent.cleanup();
-    console.log('[AiConsoleModal] Modal closed.');
-  }
+    onOpen() {
+        console.log('[AiConsoleModal] Opening modal...');
+        this.titleEl.setText('AI Console Playground');
+        this.contentEl.empty();
+        const container = this.contentEl.createEl('div', { cls: 'ai-console-container' });
+        this.tabComponent.render(container);
+    }
+
+    private addToHistory(entry: HistoryEntry) {
+        this.history.unshift(entry);
+        if (this.history.length > this.maxHistoryEntries) {
+            this.history.pop();
+        }
+        this.renderHistory();
+    }
+
+    public renderHistory() {
+        const activeTab = this.tabs.find(tab => tab.id === this.tabComponent.getActiveTabId());
+        if (activeTab && activeTab.renderHistory) {
+            activeTab.renderHistory(this.history);
+        }
+    }
+
+    onClose() {
+        this.tabComponent.cleanup();
+        console.log('[AiConsoleModal] Modal closed.');
+    }
 }
 ===== src/ui/console/tabs/ImageConsoleTab.ts =====
 
-// src/ui/console/tabs/ImageConsoleTab.ts
-import { App } from 'obsidian';
+import { App, Notice, Setting } from 'obsidian';
 import type { MyPluginSettings } from '../../../settings/types';
 import type { SecretsManager } from '../../../utils/secrets';
+import { ImageGateway } from '../../../gateways/ImageGateway';
+import { ProviderSelector } from '../sections/ProviderSelector';
+import { PromptInput } from '../sections/PromptInput';
+import { PromptHistory } from '../sections/PromptHistory';
+
+interface ImageHistoryEntry {
+    provider: string;
+    model: string;
+    prompt: string;
+    imageUrls: string[];
+    timestamp: string;
+}
 
 export class ImageConsoleTab {
-  id = 'image';
-  name = 'Image Playground';
-  icon = 'image';
+    id = 'image';
+    name = 'Image Playground';
+    icon = 'image';
+    private imageGateway?: ImageGateway;
+    private providerSelector: ProviderSelector;
+    private promptInput: PromptInput;
+    private promptHistory: PromptHistory;
+    private history: ImageHistoryEntry[] = [];
 
-  constructor(
-    private app: App,
-    private settings: MyPluginSettings,
-    private secrets: SecretsManager
-  ) {}
+    constructor(
+        private app: App,
+        private settings: MyPluginSettings,
+        private secrets: SecretsManager,
+        private addToHistory?: (entry: ImageHistoryEntry) => void,
+        private updateHistoryCallback?: () => void
+    ) {
+        this.providerSelector = new ProviderSelector(app, settings, secrets);
+        this.promptInput = new PromptInput();
+        this.promptHistory = new PromptHistory();
+    }
 
-  render(container: HTMLElement) {
-    container.createEl('p', { text: 'Image Console (Coming Soon)' });
-  }
+    async render(container: HTMLElement) {
+        console.log('[ImageConsoleTab] Rendering...');
+        try {
+            this.imageGateway = await ImageGateway.create(this.secrets, this.settings);
+            console.log('[ImageConsoleTab] ImageGateway initialized successfully.');
+        } catch (error: any) {
+            console.error('[ImageConsoleTab] Failed to initialize ImageGateway:', error);
+            new Notice('Failed to initialize Image Console.');
+            container.createEl('p', { text: 'Error initializing Image Console.' });
+            return;
+        }
 
-  cleanup() {}
+        // Render sections
+        this.providerSelector.render(container, undefined);
+        this.promptInput.render(container, this.runPrompt.bind(this));
+
+        // Image output area
+        const outputSection = container.createEl('div', { cls: 'ai-console-output-section' });
+        outputSection.createEl('h4', { text: 'Generated Images' });
+        const outputArea = outputSection.createEl('div', { cls: 'ai-console-output' });
+
+        // Size selection
+        const sizeSetting = new Setting(container)
+            .setName('Image Size')
+            .setDesc('Select the size of the generated image.')
+            .addDropdown(dropdown => {
+                ['256x256', '512x512', '1024x1024'].forEach(size => dropdown.addOption(size, size));
+                dropdown.setValue('1024x1024');
+            });
+
+        // Render history
+        this.promptHistory.render(container, this.historyClickHandler.bind(this));
+        if (this.updateHistoryCallback) {
+            this.updateHistoryCallback();
+        }
+    }
+
+    private async runPrompt() {
+        console.log('[ImageConsoleTab] Run button clicked.');
+        const provider = this.providerSelector.getSelectedProvider();
+        const model = this.providerSelector.getSelectedModel() || this.settings.providers[provider]?.model || 'dall-e-3';
+        const prompt = this.promptInput.getPrompt().trim();
+        const size = (document.querySelector('.ai-console-output-section select') as HTMLSelectElement)?.value || '1024x1024';
+
+        if (!prompt) {
+            new Notice('Please enter a prompt.');
+            return;
+        }
+        if (!provider) {
+            new Notice('Please select a provider.');
+            return;
+        }
+        if (!this.imageGateway) {
+            new Notice('ImageGateway not initialized.');
+            return;
+        }
+
+        const request = { prompt, model, size, n: 1 };
+        const adapter = (this.imageGateway as any).adapters[provider];
+        if (!adapter) {
+            new Notice(`No adapter found for provider: ${provider}.`);
+            console.error('[ImageConsoleTab] No adapter found for provider:', provider);
+            return;
+        }
+
+        try {
+            const outputArea = document.querySelector('.ai-console-output') as HTMLElement;
+            outputArea.empty();
+            outputArea.setText('Generating...');
+
+            const result = await adapter.generate(request);
+            outputArea.empty();
+
+            result.imageUrls.forEach((url: string) => {
+                const img = outputArea.createEl('img', { attr: { src: url, style: 'max-width: 100%; margin: 10px 0;' } });
+                img.onerror = () => {
+                    img.remove();
+                    outputArea.createEl('p', { text: 'Failed to load image.' });
+                };
+            });
+
+            const historyEntry: ImageHistoryEntry = {
+                provider,
+                model,
+                prompt,
+                imageUrls: result.imageUrls,
+                timestamp: new Date().toLocaleString(),
+            };
+            this.history.unshift(historyEntry);
+            if (this.history.length > 10) this.history.pop();
+            if (this.addToHistory) this.addToHistory(historyEntry);
+            if (this.updateHistoryCallback) this.updateHistoryCallback();
+
+            console.log('[ImageConsoleTab] Image generated:', result.imageUrls);
+        } catch (error: any) {
+            console.error('[ImageConsoleTab] Generation error:', error);
+            new Notice(`Failed to generate image: ${error.message || 'Unknown error'}`);
+            const outputArea = document.querySelector('.ai-console-output') as HTMLElement;
+            outputArea.setText(`Error: ${error.message || 'Unknown error'}`);
+        }
+    }
+
+    private historyClickHandler(entry: ImageHistoryEntry) {
+        this.providerSelector.setProvider(entry.provider, entry.model);
+        this.promptInput.setPrompt(entry.prompt);
+    }
+
+    cleanup() {
+        this.providerSelector.cleanup();
+        this.promptInput.cleanup();
+        this.promptHistory.cleanup();
+    }
+
+    renderHistory(history: (ImageHistoryEntry | any)[]) {
+        const imageHistory = history.filter((entry): entry is ImageHistoryEntry => 'imageUrls' in entry);
+        this.promptHistory.updateHistory(imageHistory, this.historyClickHandler.bind(this));
+    }
 }
 ===== src/ui/console/tabs/ThreeDConsoleTab.ts =====
 
@@ -932,47 +1073,64 @@ export class OutputViewer {
   }
 ===== src/ui/console/sections/PromptHistory.ts =====
 
-// src/ui/console/sections/PromptHistory.ts
-interface PromptHistoryEntry {
-    provider: string;
-    model: string;
-    prompt: string;
-    output: string;
-    timestamp: string;
-  }
-  
-  export class PromptHistory {
-    private historyContainer: HTMLElement;
-    private historyList: HTMLElement;
-    private isHistoryVisible: boolean = true;
-  
-    render(container: HTMLElement, onClick: (entry: PromptHistoryEntry) => void) {
-      this.historyContainer = container.createEl('div', { cls: 'ai-console-history' });
-      const historyHeader = this.historyContainer.createEl('h4', { text: 'Recent Prompts ▼' });
-      this.historyList = this.historyContainer.createEl('ul', { cls: 'ai-console-history-list' });
-  
-      historyHeader.addEventListener('click', () => {
-        this.isHistoryVisible = !this.isHistoryVisible;
-        this.historyList.style.display = this.isHistoryVisible ? 'block' : 'none';
-        historyHeader.textContent = `Recent Prompts ${this.isHistoryVisible ? '▼' : '▲'}`;
-      });
+import type { App } from 'obsidian';
+import type { BaseHistoryEntry, ImageHistoryEntry } from '../AiConsoleModal';
+
+// Type guard to check if entry is ImageHistoryEntry
+function isImageHistoryEntry(entry: BaseHistoryEntry): entry is ImageHistoryEntry {
+    return 'imageUrls' in entry;
+}
+
+export class PromptHistory {
+    private container?: HTMLElement;
+
+    constructor() {}
+
+    render(container: HTMLElement, onClick: (entry: BaseHistoryEntry) => void) {
+        this.container = container.createEl('div', { cls: 'ai-console-history-section' });
+        this.container.createEl('h4', { text: 'History' });
+        this.updateHistory([], onClick);
     }
-  
-    updateHistory(history: PromptHistoryEntry[], onClick: (entry: PromptHistoryEntry) => void) {
-      this.historyList.empty();
-      history.forEach(entry => {
-        const li = this.historyList.createEl('li');
-        li.createEl('strong', { text: `[${entry.timestamp}] ${entry.provider} (${entry.model})` });
-        li.createEl('br');
-        li.createEl('span', { text: `Prompt: ${entry.prompt}${entry.prompt.length > 50 ? '...' : ''}` });
-        li.addEventListener('click', () => onClick(entry));
-      });
+
+    updateHistory<T extends BaseHistoryEntry>(history: T[], onClick: (entry: T) => void) {
+        if (!this.container) return;
+
+        const historyContainer = this.container.querySelector('.ai-console-history') || this.container.createEl('div', { cls: 'ai-console-history' });
+        historyContainer.empty();
+
+        if (history.length === 0) {
+            historyContainer.createEl('p', { text: 'No history yet.' });
+            return;
+        }
+
+        history.forEach((entry, index) => {
+            const entryEl = historyContainer.createEl('div', { cls: 'ai-console-history-entry' });
+            entryEl.createEl('p', { text: `Prompt: ${entry.prompt.slice(0, 50)}${entry.prompt.length > 50 ? '...' : ''}` });
+            entryEl.createEl('p', { text: `Provider: ${entry.provider}` });
+            entryEl.createEl('p', { text: `Model: ${entry.model}` });
+            entryEl.createEl('p', { text: `Time: ${entry.timestamp}` });
+
+            // Display image thumbnail for image entries
+            if (isImageHistoryEntry(entry) && entry.imageUrls?.length > 0) {
+                entryEl.createEl('img', {
+                    attr: { 
+                        src: entry.imageUrls[0], 
+                        style: 'max-width: 50px; max-height: 50px; margin-top: 5px;'
+                    }
+                });
+            }
+
+            entryEl.addEventListener('click', () => onClick(entry));
+        });
     }
-  
+
     cleanup() {
-      this.historyContainer.empty();
+        if (this.container) {
+            this.container.empty();
+            this.container = undefined;
+        }
     }
-  }
+}
 ===== src/ui/console/sections/PromptInput.ts =====
 
 // src/ui/console/sections/PromptInput.ts
@@ -1974,24 +2132,37 @@ export function renderRemoveKeyButton(tab: SampleSettingTab, containerEl: HTMLEl
 
 // src/core/Adapter.ts
 export interface LLMRequest {
-    prompt: string;
-    model?: string;
-    systemPrompt?: string;
-    temperature?: number;
-    maxTokens?: number;
-  }
-  
-  export interface LLMResponse {
-    output: string;
-    tokensUsed?: number;
-  }
-  
-  export interface LLMAdapter {
-    /** e.g. 'openai', 'anthropic' */
-    providerKey: string;
-    generate(request: LLMRequest): Promise<LLMResponse>;
-  }
-  
+  prompt: string;
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  systemPrompt?: string;
+}
+
+export interface LLMResponse {
+  output: string;
+  tokensUsed?: number;
+}
+
+export interface ImageRequest {
+  prompt: string;
+  model?: string;
+  n?: number; // Number of images to generate
+  size?: string; // e.g., '1024x1024'
+  quality?: 'standard' | 'hd';
+}
+
+export interface ImageResponse {
+  imageUrls: string[];
+}
+
+export interface LLMAdapter {
+  generate(req: LLMRequest): Promise<LLMResponse>;
+}
+
+export interface ImageAdapter {
+  generate(req: ImageRequest): Promise<ImageResponse>;
+}
 ===== src/core/Gateway.ts =====
 
 
@@ -2201,6 +2372,65 @@ export class SecretsManager {
     }
 }
 
+===== src/adapters/image/OpenAIImageAdapter.ts =====
+
+// src/adapters/image/OpenAIImageAdapter.ts
+import type { ImageAdapter, ImageRequest, ImageResponse } from '../../core/Adapter';
+import { OpenAIBaseAdapter } from '../base/OpenAIBaseAdapter';
+
+export class OpenAIImageAdapter extends OpenAIBaseAdapter implements ImageAdapter {
+    private defaultModel: string;
+    private fallbackModel = 'dall-e-3';
+
+    constructor(apiKey: string, defaultModel: string = 'dall-e-3') {
+        super(apiKey);
+        this.defaultModel = defaultModel;
+        console.log('[OpenAIImageAdapter] Initialized with default model:', defaultModel);
+    }
+
+    async generate(req: ImageRequest): Promise<ImageResponse> {
+        const model = await this.validateModelInternal(req.model, this.defaultModel, this.fallbackModel);
+
+        const body = {
+            model,
+            prompt: req.prompt,
+            n: req.n ?? 1,
+            size: req.size ?? '1024x1024',
+            quality: req.quality ?? 'standard',
+            response_format: 'url',
+        };
+
+        console.log('[OpenAIImageAdapter] Sending request:', {
+            endpoint: 'images/generations',
+            body: {
+                ...body,
+                prompt: body.prompt.length > 50 ? body.prompt.slice(0, 50) + '...' : body.prompt,
+            },
+        });
+
+        try {
+            const data = await this.makeRequest('images/generations', body, 'POST');
+
+            if (!data.data || !Array.isArray(data.data) || !data.data[0]?.url) {
+                console.error('[OpenAIImageAdapter] Unexpected response format:', data);
+                throw new Error('Unexpected OpenAI API response format');
+            }
+
+            const imageUrls = data.data.map((item: any) => item.url);
+            console.log('[OpenAIImageAdapter] Response received:', {
+                imageUrls: imageUrls.length,
+                model,
+            });
+
+            return {
+                imageUrls,
+            };
+        } catch (error) {
+            console.error('[OpenAIImageAdapter] Generation error:', error);
+            throw error;
+        }
+    }
+}
 ===== src/adapters/text/GeminiTextAdapter.ts =====
 
 import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
@@ -3631,7 +3861,78 @@ export abstract class GroqBaseAdapter {
 }
 ===== src/gateways/ImageGateway.ts =====
 
+// src/gateways/ImageGateway.ts
+import type { SecretsManager } from '../utils/secrets';
+import type { MyPluginSettings } from '../settings/types';
+import { providerMetadata } from '../settings/providers/index';
+import type { ImageAdapter, ImageRequest, ImageResponse } from '../core/Adapter';
+import { OpenAIImageAdapter } from '../adapters/image/OpenAIImageAdapter';
 
+export class ImageGateway {
+    private adapters: Record<string, ImageAdapter> = {};
+
+    private constructor(
+        private defaultProvider: string,
+        private backupProvider: string
+    ) {}
+
+    static async create(
+        secrets: SecretsManager,
+        settings: MyPluginSettings
+    ): Promise<ImageGateway> {
+        const gw = new ImageGateway(
+            settings.categories.image.defaultProvider,
+            settings.categories.image.backupProvider
+        );
+
+        for (const key of Object.keys(settings.providers)) {
+            if (!['openai', 'stabilityai', 'grok'].includes(key)) continue; // Only image-capable providers
+            const model = settings.providers[key].model;
+            let apiKey: string | undefined;
+
+            if (providerMetadata[key].requiresApiKey) {
+                apiKey = await secrets.getSecret(key);
+                if (!apiKey) {
+                    console.warn(`[ImageGateway] No API key found for ${key}. Skipping adapter.`);
+                    continue;
+                }
+            }
+
+            let adapter: ImageAdapter;
+            switch (key) {
+                case 'openai':
+                    adapter = new OpenAIImageAdapter(apiKey!, model);
+                    break;
+                // Add other image adapters (e.g., StabilityAI, Grok) when implemented
+                default:
+                    console.warn(`[ImageGateway] Unsupported image provider: ${key}`);
+                    continue;
+            }
+
+            console.log(`[ImageGateway] Adapter created for ${key} with model: ${model}`);
+            gw.adapters[key] = adapter;
+        }
+
+        console.log('[ImageGateway] Initialized adapters:', Object.keys(gw.adapters));
+        return gw;
+    }
+
+    async generate(request: ImageRequest): Promise<ImageResponse> {
+        const primary = this.adapters[this.defaultProvider];
+        try {
+            if (!primary) {
+                throw new Error(`No adapter found for default provider: ${this.defaultProvider}`);
+            }
+            return await primary.generate(request);
+        } catch (err) {
+            if (this.backupProvider && this.adapters[this.backupProvider]) {
+                console.log(`[ImageGateway] Falling back to backup provider: ${this.backupProvider}`);
+                return await this.adapters[this.backupProvider].generate(request);
+            }
+            throw err;
+        }
+    }
+}
 ===== src/gateways/TextGateway.ts =====
 
 import type { SecretsManager } from '../utils/secrets';
@@ -3750,7 +4051,7 @@ export class TextGateway {
 
 import type { App } from 'obsidian';
 import type { SecretsManager } from '../utils/secrets';
-import type { MyPluginSettings } from '../settings/settings';
+import type { MyPluginSettings } from '../settings/types';
 
 import { TextGateway } from '../gateways/TextGateway';
 //import { ImageGateway } from '../gateways/ImageGateway';
