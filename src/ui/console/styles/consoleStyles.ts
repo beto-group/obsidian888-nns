@@ -257,4 +257,15 @@ export const consoleCSS = `
 .ai-console-history-list span {
   color: var(--text-muted);
 }
+.ai-console-controls-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  flex-wrap: nowrap;
+}
+
+.ai-console-controls-spacer {
+  flex-grow: 1;
+}
 `;

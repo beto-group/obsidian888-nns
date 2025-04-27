@@ -15,9 +15,16 @@ export interface LLMResponse {
 export interface ImageRequest {
   prompt: string;
   model?: string;
-  n?: number; // Number of images to generate
-  size?: string; // e.g., '1024x1024'
-  quality?: 'standard' | 'hd';
+  size?: string;
+  n?: number;
+  quality?: 'standard' | 'hd' | 'low' | 'medium' | 'high' | 'auto';
+  response_format?: 'url' | 'b64_json';
+  user?: string;
+  // gpt-image-1 specific fields
+  output_format?: 'png' | 'jpeg' | 'webp';
+  background?: string;
+  moderation?: boolean;
+  output_compression?: 'none' | 'low' | 'medium' | 'high';
 }
 
 export interface ImageResponse {
@@ -29,5 +36,5 @@ export interface LLMAdapter {
 }
 
 export interface ImageAdapter {
-  generate(req: ImageRequest): Promise<ImageResponse>;
+  generate(request: ImageRequest): Promise<ImageResponse>;
 }

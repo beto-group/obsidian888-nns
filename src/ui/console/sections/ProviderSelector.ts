@@ -9,11 +9,15 @@ export class ProviderSelector {
   private providerSelectEl: HTMLSelectElement;
   private modelSelectEl: HTMLSelectElement;
   private providers: string[] = [];
+  private providerChangeListeners: ((provider: string) => void)[] = [];
+  private modelChangeListeners: ((model: string) => void)[] = []; // Added for model change events
 
   constructor(
     private app: App,
     private settings: MyPluginSettings,
-    private secrets: SecretsManager
+    private secrets: SecretsManager,
+    private allowedProviders?: string[], // Optional filter for providers
+    private providerModels?: Record<string, string[]> // Optional override for models per provider
   ) {}
 
   async render(container: HTMLElement, textGateway?: TextGateway) {
@@ -24,6 +28,10 @@ export class ProviderSelector {
 
     try {
       for (const key of Object.keys(this.settings.providers)) {
+        // Only include providers that are in allowedProviders, if provided
+        if (this.allowedProviders && !this.allowedProviders.includes(key)) {
+          continue;
+        }
         const meta = providerMetadata[key];
         if (meta.requiresApiKey) {
           const apiKey = await this.secrets.getSecret(key);
@@ -49,28 +57,34 @@ export class ProviderSelector {
           this.providers.forEach(p => dropdown.addOption(p, p));
           const defaultProvider = this.settings.categories?.text?.defaultProvider;
           const initial = defaultProvider && this.providers.includes(defaultProvider)
-              ? defaultProvider
-              : this.providers[0];
+            ? defaultProvider
+            : this.providers[0];
           dropdown.setValue(initial);
 
           dropdown.onChange(async value => {
             console.log('[ProviderSelector] Provider changed to:', value);
             await this.updateModelDropdown(value);
+            this.providerChangeListeners.forEach(listener => listener(value));
           });
         }
       });
 
-      const modelSetting = new Setting(controlsSection)
+    const modelSetting = new Setting(controlsSection)
       .setName('Model')
       .setDesc('Select the model for the selected provider.');
-    
+
     modelSetting.controlEl.style.flexDirection = 'column';
     modelSetting.controlEl.style.alignItems = 'stretch';
-    
+
     modelSetting.addDropdown(dropdown => {
       this.modelSelectEl = dropdown.selectEl;
-      this.modelSelectEl.style.width = '100%'; // ⬅️ make dropdown full width
+      this.modelSelectEl.style.width = '100%'; // Make dropdown full width
+      this.modelSelectEl.setAttr('data-type', 'model'); // Add for debugging or future use
       dropdown.setDisabled(this.providers.length === 0);
+      dropdown.onChange(value => {
+        console.log('[ProviderSelector] Model changed to:', value);
+        this.modelChangeListeners.forEach(listener => listener(value));
+      });
     });
 
     if (this.providers.length > 0) {
@@ -94,13 +108,19 @@ export class ProviderSelector {
 
     try {
       let models: string[] = [];
-      if (providerMetadata[provider].requiresApiKey) {
-        const apiKey = await this.secrets.getSecret(provider);
-        if (apiKey) {
-          models = await providerFetchers[provider](apiKey, this.app);
-        }
+
+      // Use provided providerModels if available, otherwise fetch dynamically
+      if (this.providerModels && this.providerModels[provider]) {
+        models = this.providerModels[provider];
       } else {
-        models = await providerFetchers[provider]('', this.app);
+        if (providerMetadata[provider].requiresApiKey) {
+          const apiKey = await this.secrets.getSecret(provider);
+          if (apiKey) {
+            models = await providerFetchers[provider](apiKey, this.app);
+          }
+        } else {
+          models = await providerFetchers[provider]('', this.app);
+        }
       }
 
       if (!models.length) {
@@ -113,10 +133,20 @@ export class ProviderSelector {
       this.modelSelectEl.value = models.includes(current) ? current : models[0];
       this.modelSelectEl.disabled = false;
       console.log('[ProviderSelector] Models loaded:', models);
+      // Trigger model change event to ensure UI updates
+      this.modelChangeListeners.forEach(listener => listener(this.modelSelectEl.value));
     } catch (error) {
       console.error('[ProviderSelector] Error fetching models:', error);
       this.modelSelectEl.add(new Option('Error fetching models', ''));
     }
+  }
+
+  onProviderChange(listener: (provider: string) => void) {
+    this.providerChangeListeners.push(listener);
+  }
+
+  onModelChange(listener: (model: string) => void) {
+    this.modelChangeListeners.push(listener);
   }
 
   getSelectedProvider(): string {
@@ -133,12 +163,16 @@ export class ProviderSelector {
       this.updateModelDropdown(provider).then(() => {
         if (this.modelSelectEl.options.length > 0) {
           this.modelSelectEl.value = model;
+          // Trigger model change event
+          this.modelChangeListeners.forEach(listener => listener(model));
         }
       });
+      this.providerChangeListeners.forEach(listener => listener(provider));
     }
   }
 
   cleanup() {
-    // No cleanup needed for dropdowns
+    this.providerChangeListeners = [];
+    this.modelChangeListeners = [];
   }
 }

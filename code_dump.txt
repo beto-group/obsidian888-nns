@@ -188,6 +188,9 @@ class SampleModal extends Modal {
     }
 }
 
+===== src/types.ts =====
+
+
 ===== src/ui/components/TabComponent.ts =====
 
 import { App, setIcon } from 'obsidian';
@@ -424,6 +427,7 @@ export class AiConsoleModal extends Modal {
 }
 ===== src/ui/console/tabs/ImageConsoleTab.ts =====
 
+// src/ui/console/tabs/ImageConsoleTab.ts
 import { App, Notice, Setting } from 'obsidian';
 import type { MyPluginSettings } from '../../../settings/types';
 import type { SecretsManager } from '../../../utils/secrets';
@@ -433,152 +437,470 @@ import { PromptInput } from '../sections/PromptInput';
 import { PromptHistory } from '../sections/PromptHistory';
 
 interface ImageHistoryEntry {
-    provider: string;
-    model: string;
-    prompt: string;
-    imageUrls: string[];
-    timestamp: string;
+  provider: string;
+  model: string;
+  prompt: string;
+  imageUrls: string[];
+  timestamp: string;
+  size?: string;
+  quality?: string;
+  output_format?: string;
 }
 
 export class ImageConsoleTab {
-    id = 'image';
-    name = 'Image Playground';
-    icon = 'image';
-    private imageGateway?: ImageGateway;
-    private providerSelector: ProviderSelector;
-    private promptInput: PromptInput;
-    private promptHistory: PromptHistory;
-    private history: ImageHistoryEntry[] = [];
+  id = 'image';
+  name = 'Image Playground';
+  icon = 'image';
 
-    constructor(
-        private app: App,
-        private settings: MyPluginSettings,
-        private secrets: SecretsManager,
-        private addToHistory?: (entry: ImageHistoryEntry) => void,
-        private updateHistoryCallback?: () => void
-    ) {
-        this.providerSelector = new ProviderSelector(app, settings, secrets);
-        this.promptInput = new PromptInput();
-        this.promptHistory = new PromptHistory();
+  private imageGateway?: ImageGateway;
+  private providerSelector: ProviderSelector;
+  private promptInput: PromptInput;
+  private promptHistory: PromptHistory;
+  private history: ImageHistoryEntry[] = [];
+  private validProviders = ['openai', 'stabilityai', 'grok'];
+  private blobUrls: string[] = [];
+
+  private sizeDropdown?: HTMLSelectElement;
+  private nImagesInput?: HTMLInputElement;
+  private qualityDropdown?: HTMLSelectElement;
+  private outputFormatDropdown?: HTMLSelectElement;
+  private outputArea?: HTMLElement;
+
+  private providerModels: Record<string, string[]> = {
+    openai: ['dall-e-3', 'dall-e-2', 'gpt-image-1'],
+    stabilityai: ['stable-diffusion'],
+    grok: ['grok-image'],
+  };
+
+  private defaultModels: Record<string, string> = {
+    openai: 'dall-e-3',
+    stabilityai: 'stable-diffusion',
+    grok: 'grok-image',
+  };
+
+  private modelSizes: Record<string, string[]> = {
+    'dall-e-3': ['1024x1024', '1792x1024', '1024x1792'],
+    'dall-e-2': ['256x256', '512x512', '1024x1024'],
+    'gpt-image-1': ['1024x1024', '1536x1024', '1024x1536'],
+    'stable-diffusion': ['512x512', '1024x1024'],
+    'grok-image': ['1024x1024'],
+  };
+
+  private maxN: Record<string, number> = {
+    'dall-e-3': 1,
+    'dall-e-2': 10,
+    'gpt-image-1': 10,
+    'stable-diffusion': 4,
+    'grok-image': 1,
+  };
+
+  private modelQualities: Record<string, string[]> = {
+    'dall-e-3': ['standard', 'hd'],
+    'dall-e-2': [],
+    'gpt-image-1': ['low', 'medium', 'high', 'auto'],
+    'stable-diffusion': [],
+    'grok-image': [],
+  };
+
+  private outputFormats: string[] = ['png', 'jpeg', 'webp'];
+
+  constructor(
+    private app: App,
+    private settings: MyPluginSettings,
+    private secrets: SecretsManager,
+    private addToHistory?: (entry: ImageHistoryEntry) => void,
+    private updateHistoryCallback?: () => void
+  ) {
+    this.providerSelector = new ProviderSelector(app, settings, secrets, this.validProviders, this.providerModels);
+    this.promptInput = new PromptInput();
+    this.promptHistory = new PromptHistory();
+  }
+
+  async render(container: HTMLElement) {
+    console.log('[ImageConsoleTab] Rendering...');
+
+    try {
+      this.imageGateway = await ImageGateway.create(this.secrets, this.settings);
+      console.log('[ImageGateway] ImageGateway initialized successfully.');
+    } catch (error: any) {
+      console.error('[ImageConsoleTab] Failed to initialize ImageGateway:', error);
+      new Notice('Failed to initialize Image Console.');
+      container.createEl('p', { text: 'Error initializing Image Console.' });
+      return;
     }
 
-    async render(container: HTMLElement) {
-        console.log('[ImageConsoleTab] Rendering...');
-        try {
-            this.imageGateway = await ImageGateway.create(this.secrets, this.settings);
-            console.log('[ImageConsoleTab] ImageGateway initialized successfully.');
-        } catch (error: any) {
-            console.error('[ImageConsoleTab] Failed to initialize ImageGateway:', error);
-            new Notice('Failed to initialize Image Console.');
-            container.createEl('p', { text: 'Error initializing Image Console.' });
+    container.style.display = 'flex';
+    container.style.flexDirection = 'column';
+
+    const fixedSection = container.createEl('div', { cls: 'ai-console-fixed-section' });
+
+    await this.providerSelector.render(fixedSection);
+
+    if (!this.providerSelector.getSelectedProvider()) {
+      new Notice('No providers available. Please configure API keys.');
+      return;
+    }
+
+    const updateUI = () => {
+      const provider = this.providerSelector.getSelectedProvider();
+      const model = this.providerSelector.getSelectedModel() || this.defaultModels[provider] || 'dall-e-3';
+
+      console.log('[ImageConsoleTab] updateUI called - Provider:', provider, 'Model:', model);
+
+      // Update size dropdown
+      if (this.sizeDropdown) {
+        const currentSize = this.sizeDropdown.value || '';
+        console.log('[ImageConsoleTab] Current size:', currentSize);
+        this.sizeDropdown.innerHTML = '';
+        const sizes = this.modelSizes[model] || ['1024x1024'];
+        sizes.forEach(size => this.sizeDropdown!.add(new Option(size, size)));
+        this.sizeDropdown.value = sizes.includes(currentSize) ? currentSize : sizes[0];
+        console.log('[ImageConsoleTab] Updated size dropdown:', this.sizeDropdown.value);
+      } else {
+        console.warn('[ImageConsoleTab] sizeDropdown is undefined');
+      }
+
+      // Update max n
+      if (this.nImagesInput) {
+        const max = this.maxN[model] || 1;
+        this.nImagesInput.max = max.toString();
+        const currentN = parseInt(this.nImagesInput.value) || 1;
+        if (currentN > max) {
+          this.nImagesInput.value = max.toString();
+        }
+        console.log('[ImageConsoleTab] Updated n input: max=', max, 'value=', this.nImagesInput.value);
+      } else {
+        console.warn('[ImageConsoleTab] nImagesInput is undefined');
+      }
+
+      // Update quality dropdown
+      if (this.qualityDropdown?.parentElement?.parentElement) {
+        const qualitySetting = this.qualityDropdown.parentElement.parentElement as HTMLElement;
+        const qualities = this.modelQualities[model] || [];
+        console.log('[ImageConsoleTab] Qualities for model:', model, qualities);
+        if (qualities.length === 0) {
+          qualitySetting.style.display = 'none';
+          console.log('[ImageConsoleTab] Quality dropdown hidden');
+        } else {
+          qualitySetting.style.display = 'block';
+          const currentQuality = this.qualityDropdown.value || '';
+          this.qualityDropdown.innerHTML = '';
+          qualities.forEach(q => this.qualityDropdown!.add(new Option(q.charAt(0).toUpperCase() + q.slice(1), q)));
+          this.qualityDropdown.value = qualities.includes(currentQuality) ? currentQuality : qualities[0];
+          console.log('[ImageConsoleTab] Updated quality dropdown:', this.qualityDropdown.value);
+        }
+      } else {
+        console.warn('[ImageConsoleTab] qualityDropdown or its parent is undefined');
+      }
+
+      // Update output format dropdown
+      if (this.outputFormatDropdown?.parentElement?.parentElement) {
+        const outputFormatSetting = this.outputFormatDropdown.parentElement.parentElement as HTMLElement;
+        if (model === 'gpt-image-1') {
+          outputFormatSetting.style.display = 'block';
+          const currentFormat = this.outputFormatDropdown.value || '';
+          this.outputFormatDropdown.innerHTML = '';
+          this.outputFormats.forEach(f => this.outputFormatDropdown!.add(new Option(f.toUpperCase(), f)));
+          this.outputFormatDropdown.value = this.outputFormats.includes(currentFormat) ? currentFormat : 'png';
+          console.log('[ImageConsoleTab] Updated output format dropdown:', this.outputFormatDropdown.value);
+        } else {
+          outputFormatSetting.style.display = 'none';
+          console.log('[ImageConsoleTab] Output format dropdown hidden');
+        }
+      } else {
+        console.warn('[ImageConsoleTab] outputFormatDropdown or its parent is undefined');
+      }
+    };
+
+    // Trigger updateUI on provider change
+    this.providerSelector.onProviderChange((provider: string) => {
+      console.log('[ImageConsoleTab] Provider changed to:', provider);
+      updateUI();
+    });
+
+    // Trigger updateUI on model change
+    this.providerSelector.onModelChange((model: string) => {
+      console.log('[ImageConsoleTab] Model changed to:', model);
+      updateUI();
+    });
+
+    const promptRow = fixedSection.createEl('div', { cls: 'ai-console-prompt-section-full' });
+    this.promptInput.render(promptRow, () => {});
+    const promptTextarea = promptRow.querySelector('textarea');
+    if (promptTextarea?.nextElementSibling?.tagName === 'BUTTON') {
+      promptTextarea.nextElementSibling.remove();
+    }
+
+    const controlsRow = fixedSection.createEl('div', { cls: 'ai-console-controls-row' });
+
+    new Setting(controlsRow)
+      .setName('Size')
+      .addDropdown(dropdown => {
+        this.sizeDropdown = dropdown.selectEl;
+        console.log('[ImageConsoleTab] sizeDropdown initialized');
+      })
+      .controlEl.style.flex = '0 0 auto';
+
+    new Setting(controlsRow)
+      .setName('N')
+      .addText(text => {
+        this.nImagesInput = text.inputEl;
+        this.nImagesInput.type = 'number';
+        this.nImagesInput.min = '1';
+        this.nImagesInput.value = '1';
+        this.nImagesInput.style.width = '50px';
+      })
+      .controlEl.style.flex = '0 0 auto';
+
+    new Setting(controlsRow)
+      .setName('Quality')
+      .addDropdown(dropdown => {
+        this.qualityDropdown = dropdown.selectEl;
+        console.log('[ImageConsoleTab] qualityDropdown initialized');
+      })
+      .controlEl.style.flex = '0 0 auto';
+
+    new Setting(controlsRow)
+      .setName('Output Format')
+      .addDropdown(dropdown => {
+        this.outputFormatDropdown = dropdown.selectEl;
+        console.log('[ImageConsoleTab] outputFormatDropdown initialized');
+      })
+      .controlEl.style.flex = '0 0 auto';
+
+    const runButtonRow = fixedSection.createEl('div', { cls: 'ai-console-run-button-row' });
+    const runButton = runButtonRow.createEl('button', { text: 'Run', cls: 'ai-console-run-btn' });
+    runButton.addEventListener('click', this.runPrompt.bind(this));
+
+    const scrollableSection = container.createEl('div', { cls: 'ai-console-scrollable-section' });
+
+    const outputSection = scrollableSection.createEl('div', { cls: 'ai-console-output-section' });
+    outputSection.createEl('h4', { text: 'Generated Images' });
+    this.outputArea = outputSection.createEl('div', { cls: 'ai-console-image-grid' });
+
+    this.promptHistory.render(scrollableSection, this.historyClickHandler.bind(this));
+    if (this.updateHistoryCallback) {
+      this.updateHistoryCallback();
+    }
+
+    this.providerSelector.setProvider('openai', this.defaultModels['openai']);
+
+    console.log('[ImageConsoleTab] Performing initial UI update...');
+    updateUI();
+
+    const styleEl = container.createEl('style');
+    styleEl.textContent = `
+      .ai-console-fixed-section {
+        flex-shrink: 0;
+      }
+      .ai-console-scrollable-section {
+        flex: 1;
+        overflow-y: auto;
+        max-height: 300px;
+        padding-bottom: 16px;
+      }
+      .ai-console-image-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 16px;
+      }
+      .ai-console-controls-row {
+        display: flex;
+        overflow-x: auto;
+        gap: 16px;
+        margin-bottom: 8px;
+        padding-bottom: 4px;
+        white-space: nowrap;
+      }
+      .ai-console-controls-row::-webkit-scrollbar {
+        height: 8px;
+      }
+      .ai-console-controls-row::-webkit-scrollbar-thumb {
+        background: #555;
+        border-radius: 4px;
+      }
+      .ai-console-controls-row::-webkit-scrollbar-track {
+        background: #333;
+      }
+      .ai-console-run-button-row {
+        display: flex;
+        justify-content: center;
+        margin-bottom: 16px;
+      }
+      .ai-console-run-btn {
+        background-color: #7d57c1;
+        color: white;
+        border: none;
+        padding: 8px 16px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .ai-console-run-btn:hover {
+        background-color: #5c3a9e;
+      }
+    `;
+  }
+
+  private async runPrompt() {
+    console.log('[ImageConsoleTab] Run button clicked.');
+
+    const provider = this.providerSelector.getSelectedProvider();
+    const model = this.providerSelector.getSelectedModel() || this.defaultModels[provider] || 'dall-e-3';
+    const prompt = this.promptInput.getPrompt().trim();
+    const size = this.sizeDropdown?.value || '1024x1024';
+    const n = parseInt(this.nImagesInput?.value || '1', 10) || 1;
+    const quality = this.qualityDropdown?.value || (model === 'dall-e-3' ? 'standard' : 'auto');
+    const output_format = this.outputFormatDropdown?.value || 'png';
+
+    console.log('[ImageConsoleTab] runPrompt - provider:', provider, 'model:', model, 'prompt:', prompt, 'size:', size, 'n:', n, 'quality:', quality, 'output_format:', output_format);
+
+    if (!prompt) {
+      new Notice('Please enter a prompt.');
+      return;
+    }
+    if (!provider) {
+      new Notice('Please select a provider.');
+      return;
+    }
+    if (!this.imageGateway) {
+      new Notice('ImageGateway not initialized.');
+      return;
+    }
+
+    if (prompt.length > 1000) {
+      new Notice('Prompt is too long. Please shorten it to 1000 characters or less.');
+      return;
+    }
+    if (prompt.toLowerCase().includes('harmful') || prompt.toLowerCase().includes('explicit')) {
+      new Notice('Prompt may violate content policies. Please revise.');
+      return;
+    }
+
+    const request: any = {
+      prompt,
+      model,
+      size,
+      n,
+    };
+
+    // Model-specific request fields
+    if (model === 'gpt-image-1') {
+      request.output_format = output_format;
+      if (quality && quality !== 'auto') {
+        request.quality = quality; // low, medium, high
+      }
+    } else {
+      request.response_format = 'b64_json';
+      if (model === 'dall-e-3' && quality) {
+        request.quality = quality; // standard or hd
+      }
+    }
+
+    console.log('[ImageConsoleTab] Generated request:', request);
+
+    const adapter = (this.imageGateway as any).adapters[provider];
+    if (!adapter) {
+      new Notice(`No adapter found for provider: ${provider}.`);
+      console.error('[ImageConsoleTab] No adapter found for provider:', provider);
+      return;
+    }
+
+    try {
+      if (this.outputArea) {
+        this.outputArea.empty();
+        this.outputArea.setText('Generating...');
+      }
+
+      const result = await adapter.generate(request);
+
+      if (this.outputArea) {
+        this.outputArea.empty();
+        const renderableUrls: string[] = [];
+        result.imageUrls.forEach((url: string) => {
+          let imgSrc = url;
+          try {
+            const binary = atob(url);
+            const array = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+              array[i] = binary.charCodeAt(i);
+            }
+            const blob = new Blob([array], { type: `image/${model === 'gpt-image-1' ? output_format : 'png'}` });
+            imgSrc = URL.createObjectURL(blob);
+            this.blobUrls.push(imgSrc);
+          } catch (e) {
+            console.error('[ImageConsoleTab] Failed to decode base64:', e);
             return;
-        }
+          }
+          renderableUrls.push(imgSrc);
+          const img = this.outputArea!.createEl('img', {
+            attr: { src: imgSrc, style: 'max-width: 100%; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.2);' },
+          });
+          img.onerror = () => {
+            img.remove();
+            this.outputArea!.createEl('p', { text: 'Failed to load image.' });
+            if (imgSrc.startsWith('blob:')) {
+              URL.revokeObjectURL(imgSrc);
+              this.blobUrls = this.blobUrls.filter(u => u !== imgSrc);
+            }
+          };
+          img.onload = () => {
+            if (imgSrc.startsWith('blob:')) {
+              URL.revokeObjectURL(imgSrc);
+              this.blobUrls = this.blobUrls.filter(u => u !== imgSrc);
+            }
+          };
+        });
 
-        // Render sections
-        this.providerSelector.render(container, undefined);
-        this.promptInput.render(container, this.runPrompt.bind(this));
+        const historyEntry: ImageHistoryEntry = {
+          provider,
+          model,
+          prompt,
+          imageUrls: renderableUrls,
+          timestamp: new Date().toLocaleString(),
+          size,
+          quality,
+          output_format: model === 'gpt-image-1' ? output_format : undefined,
+        };
 
-        // Image output area
-        const outputSection = container.createEl('div', { cls: 'ai-console-output-section' });
-        outputSection.createEl('h4', { text: 'Generated Images' });
-        const outputArea = outputSection.createEl('div', { cls: 'ai-console-output' });
+        this.history.unshift(historyEntry);
+        if (this.history.length > 10) this.history.pop();
+        if (this.addToHistory) this.addToHistory(historyEntry);
+        if (this.updateHistoryCallback) this.updateHistoryCallback();
 
-        // Size selection
-        const sizeSetting = new Setting(container)
-            .setName('Image Size')
-            .setDesc('Select the size of the generated image.')
-            .addDropdown(dropdown => {
-                ['256x256', '512x512', '1024x1024'].forEach(size => dropdown.addOption(size, size));
-                dropdown.setValue('1024x1024');
-            });
-
-        // Render history
-        this.promptHistory.render(container, this.historyClickHandler.bind(this));
-        if (this.updateHistoryCallback) {
-            this.updateHistoryCallback();
-        }
+        console.log('[ImageConsoleTab] Image(s) generated:', renderableUrls);
+      }
+    } catch (error: any) {
+      console.error('[ImageConsoleTab] Generation error:', error);
+      let errorMessage = error.message || 'Unknown error';
+      if (error.message.includes('400')) {
+        errorMessage += '. Check model parameters (e.g., gpt-image-1 does not support response_format).';
+      }
+      new Notice(`Failed to generate image: ${errorMessage}`);
+      if (this.outputArea) this.outputArea.setText(`Error: ${errorMessage}`);
     }
+  }
 
-    private async runPrompt() {
-        console.log('[ImageConsoleTab] Run button clicked.');
-        const provider = this.providerSelector.getSelectedProvider();
-        const model = this.providerSelector.getSelectedModel() || this.settings.providers[provider]?.model || 'dall-e-3';
-        const prompt = this.promptInput.getPrompt().trim();
-        const size = (document.querySelector('.ai-console-output-section select') as HTMLSelectElement)?.value || '1024x1024';
+  private historyClickHandler(entry: ImageHistoryEntry) {
+    this.providerSelector.setProvider(entry.provider, entry.model);
+    this.promptInput.setPrompt(entry.prompt);
+    if (this.sizeDropdown) this.sizeDropdown.value = entry.size || '1024x1024';
+    if (this.qualityDropdown) this.qualityDropdown.value = entry.quality || (entry.model === 'dall-e-3' ? 'standard' : 'auto');
+    if (this.outputFormatDropdown && entry.output_format) this.outputFormatDropdown.value = entry.output_format;
+    console.log('[ImageConsoleTab] History entry selected:', entry);
+  }
 
-        if (!prompt) {
-            new Notice('Please enter a prompt.');
-            return;
-        }
-        if (!provider) {
-            new Notice('Please select a provider.');
-            return;
-        }
-        if (!this.imageGateway) {
-            new Notice('ImageGateway not initialized.');
-            return;
-        }
+  cleanup() {
+    this.blobUrls.forEach(url => URL.revokeObjectURL(url));
+    this.blobUrls = [];
+    this.providerSelector.cleanup();
+    this.promptInput.cleanup();
+    this.promptHistory.cleanup();
+  }
 
-        const request = { prompt, model, size, n: 1 };
-        const adapter = (this.imageGateway as any).adapters[provider];
-        if (!adapter) {
-            new Notice(`No adapter found for provider: ${provider}.`);
-            console.error('[ImageConsoleTab] No adapter found for provider:', provider);
-            return;
-        }
-
-        try {
-            const outputArea = document.querySelector('.ai-console-output') as HTMLElement;
-            outputArea.empty();
-            outputArea.setText('Generating...');
-
-            const result = await adapter.generate(request);
-            outputArea.empty();
-
-            result.imageUrls.forEach((url: string) => {
-                const img = outputArea.createEl('img', { attr: { src: url, style: 'max-width: 100%; margin: 10px 0;' } });
-                img.onerror = () => {
-                    img.remove();
-                    outputArea.createEl('p', { text: 'Failed to load image.' });
-                };
-            });
-
-            const historyEntry: ImageHistoryEntry = {
-                provider,
-                model,
-                prompt,
-                imageUrls: result.imageUrls,
-                timestamp: new Date().toLocaleString(),
-            };
-            this.history.unshift(historyEntry);
-            if (this.history.length > 10) this.history.pop();
-            if (this.addToHistory) this.addToHistory(historyEntry);
-            if (this.updateHistoryCallback) this.updateHistoryCallback();
-
-            console.log('[ImageConsoleTab] Image generated:', result.imageUrls);
-        } catch (error: any) {
-            console.error('[ImageConsoleTab] Generation error:', error);
-            new Notice(`Failed to generate image: ${error.message || 'Unknown error'}`);
-            const outputArea = document.querySelector('.ai-console-output') as HTMLElement;
-            outputArea.setText(`Error: ${error.message || 'Unknown error'}`);
-        }
-    }
-
-    private historyClickHandler(entry: ImageHistoryEntry) {
-        this.providerSelector.setProvider(entry.provider, entry.model);
-        this.promptInput.setPrompt(entry.prompt);
-    }
-
-    cleanup() {
-        this.providerSelector.cleanup();
-        this.promptInput.cleanup();
-        this.promptHistory.cleanup();
-    }
-
-    renderHistory(history: (ImageHistoryEntry | any)[]) {
-        const imageHistory = history.filter((entry): entry is ImageHistoryEntry => 'imageUrls' in entry);
-        this.promptHistory.updateHistory(imageHistory, this.historyClickHandler.bind(this));
-    }
+  renderHistory(history: (ImageHistoryEntry | any)[]) {
+    const imageHistory = history.filter((entry): entry is ImageHistoryEntry => 'imageUrls' in entry);
+    this.promptHistory.updateHistory(imageHistory, this.historyClickHandler.bind(this));
+  }
 }
 ===== src/ui/console/tabs/ThreeDConsoleTab.ts =====
 
@@ -900,7 +1222,7 @@ export class ParameterControls {
 
 // src/ui/console/sections/ProviderSelector.ts
 import { App, Setting, Notice } from 'obsidian';
-import type { MyPluginSettings } from '../../../settings/settings';
+import type { MyPluginSettings } from '../../../settings/types';
 import type { SecretsManager } from '../../../utils/secrets';
 import { providerMetadata, providerFetchers } from '../../../settings/providers/index';
 import type { TextGateway } from '../../../gateways/TextGateway';
@@ -909,11 +1231,15 @@ export class ProviderSelector {
   private providerSelectEl: HTMLSelectElement;
   private modelSelectEl: HTMLSelectElement;
   private providers: string[] = [];
+  private providerChangeListeners: ((provider: string) => void)[] = [];
+  private modelChangeListeners: ((model: string) => void)[] = []; // Added for model change events
 
   constructor(
     private app: App,
     private settings: MyPluginSettings,
-    private secrets: SecretsManager
+    private secrets: SecretsManager,
+    private allowedProviders?: string[], // Optional filter for providers
+    private providerModels?: Record<string, string[]> // Optional override for models per provider
   ) {}
 
   async render(container: HTMLElement, textGateway?: TextGateway) {
@@ -924,6 +1250,10 @@ export class ProviderSelector {
 
     try {
       for (const key of Object.keys(this.settings.providers)) {
+        // Only include providers that are in allowedProviders, if provided
+        if (this.allowedProviders && !this.allowedProviders.includes(key)) {
+          continue;
+        }
         const meta = providerMetadata[key];
         if (meta.requiresApiKey) {
           const apiKey = await this.secrets.getSecret(key);
@@ -947,28 +1277,36 @@ export class ProviderSelector {
           dropdown.addOption('', 'No providers available');
         } else {
           this.providers.forEach(p => dropdown.addOption(p, p));
-          const initial = this.settings.defaultProvider && this.providers.includes(this.settings.defaultProvider)
-            ? this.settings.defaultProvider
+          const defaultProvider = this.settings.categories?.text?.defaultProvider;
+          const initial = defaultProvider && this.providers.includes(defaultProvider)
+            ? defaultProvider
             : this.providers[0];
           dropdown.setValue(initial);
+
           dropdown.onChange(async value => {
             console.log('[ProviderSelector] Provider changed to:', value);
             await this.updateModelDropdown(value);
+            this.providerChangeListeners.forEach(listener => listener(value));
           });
         }
       });
 
-      const modelSetting = new Setting(controlsSection)
+    const modelSetting = new Setting(controlsSection)
       .setName('Model')
       .setDesc('Select the model for the selected provider.');
-    
+
     modelSetting.controlEl.style.flexDirection = 'column';
     modelSetting.controlEl.style.alignItems = 'stretch';
-    
+
     modelSetting.addDropdown(dropdown => {
       this.modelSelectEl = dropdown.selectEl;
-      this.modelSelectEl.style.width = '100%'; // ⬅️ make dropdown full width
+      this.modelSelectEl.style.width = '100%'; // Make dropdown full width
+      this.modelSelectEl.setAttr('data-type', 'model'); // Add for debugging or future use
       dropdown.setDisabled(this.providers.length === 0);
+      dropdown.onChange(value => {
+        console.log('[ProviderSelector] Model changed to:', value);
+        this.modelChangeListeners.forEach(listener => listener(value));
+      });
     });
 
     if (this.providers.length > 0) {
@@ -992,13 +1330,19 @@ export class ProviderSelector {
 
     try {
       let models: string[] = [];
-      if (providerMetadata[provider].requiresApiKey) {
-        const apiKey = await this.secrets.getSecret(provider);
-        if (apiKey) {
-          models = await providerFetchers[provider](apiKey, this.app);
-        }
+
+      // Use provided providerModels if available, otherwise fetch dynamically
+      if (this.providerModels && this.providerModels[provider]) {
+        models = this.providerModels[provider];
       } else {
-        models = await providerFetchers[provider]('', this.app);
+        if (providerMetadata[provider].requiresApiKey) {
+          const apiKey = await this.secrets.getSecret(provider);
+          if (apiKey) {
+            models = await providerFetchers[provider](apiKey, this.app);
+          }
+        } else {
+          models = await providerFetchers[provider]('', this.app);
+        }
       }
 
       if (!models.length) {
@@ -1011,10 +1355,20 @@ export class ProviderSelector {
       this.modelSelectEl.value = models.includes(current) ? current : models[0];
       this.modelSelectEl.disabled = false;
       console.log('[ProviderSelector] Models loaded:', models);
+      // Trigger model change event to ensure UI updates
+      this.modelChangeListeners.forEach(listener => listener(this.modelSelectEl.value));
     } catch (error) {
       console.error('[ProviderSelector] Error fetching models:', error);
       this.modelSelectEl.add(new Option('Error fetching models', ''));
     }
+  }
+
+  onProviderChange(listener: (provider: string) => void) {
+    this.providerChangeListeners.push(listener);
+  }
+
+  onModelChange(listener: (model: string) => void) {
+    this.modelChangeListeners.push(listener);
   }
 
   getSelectedProvider(): string {
@@ -1031,13 +1385,17 @@ export class ProviderSelector {
       this.updateModelDropdown(provider).then(() => {
         if (this.modelSelectEl.options.length > 0) {
           this.modelSelectEl.value = model;
+          // Trigger model change event
+          this.modelChangeListeners.forEach(listener => listener(model));
         }
       });
+      this.providerChangeListeners.forEach(listener => listener(provider));
     }
   }
 
   cleanup() {
-    // No cleanup needed for dropdowns
+    this.providerChangeListeners = [];
+    this.modelChangeListeners = [];
   }
 }
 ===== src/ui/console/sections/OutputViewer.ts =====
@@ -1423,6 +1781,17 @@ export const consoleCSS = `
 
 .ai-console-history-list span {
   color: var(--text-muted);
+}
+.ai-console-controls-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  flex-wrap: nowrap;
+}
+
+.ai-console-controls-spacer {
+  flex-grow: 1;
 }
 `;
 ===== src/settings/validation.ts =====
@@ -2147,9 +2516,16 @@ export interface LLMResponse {
 export interface ImageRequest {
   prompt: string;
   model?: string;
-  n?: number; // Number of images to generate
-  size?: string; // e.g., '1024x1024'
-  quality?: 'standard' | 'hd';
+  size?: string;
+  n?: number;
+  quality?: 'standard' | 'hd' | 'low' | 'medium' | 'high' | 'auto';
+  response_format?: 'url' | 'b64_json';
+  user?: string;
+  // gpt-image-1 specific fields
+  output_format?: 'png' | 'jpeg' | 'webp';
+  background?: string;
+  moderation?: boolean;
+  output_compression?: 'none' | 'low' | 'medium' | 'high';
 }
 
 export interface ImageResponse {
@@ -2161,7 +2537,7 @@ export interface LLMAdapter {
 }
 
 export interface ImageAdapter {
-  generate(req: ImageRequest): Promise<ImageResponse>;
+  generate(request: ImageRequest): Promise<ImageResponse>;
 }
 ===== src/core/Gateway.ts =====
 
@@ -2374,62 +2750,158 @@ export class SecretsManager {
 
 ===== src/adapters/image/OpenAIImageAdapter.ts =====
 
-// src/adapters/image/OpenAIImageAdapter.ts
-import type { ImageAdapter, ImageRequest, ImageResponse } from '../../core/Adapter';
-import { OpenAIBaseAdapter } from '../base/OpenAIBaseAdapter';
+import { requestUrl } from 'obsidian';
+import type { ImageRequest, ImageResponse } from '../../core/Adapter';
 
-export class OpenAIImageAdapter extends OpenAIBaseAdapter implements ImageAdapter {
-    private defaultModel: string;
-    private fallbackModel = 'dall-e-3';
+export class OpenAIImageAdapter {
+  private apiKey: string;
+  private defaultModel: string;
 
-    constructor(apiKey: string, defaultModel: string = 'dall-e-3') {
-        super(apiKey);
-        this.defaultModel = defaultModel;
-        console.log('[OpenAIImageAdapter] Initialized with default model:', defaultModel);
+  constructor(apiKey: string, model: string = 'dall-e-3') {
+    if (!apiKey) {
+      throw new Error('[OpenAIImageAdapter] API key is required.');
+    }
+    this.apiKey = apiKey.trim();
+    this.defaultModel = model;
+    console.log(`[OpenAIImageAdapter] Initialized with model: ${model}`);
+  }
+
+  async generate(request: ImageRequest): Promise<ImageResponse> {
+    const model = request.model || this.defaultModel;
+
+    // Supported models and their constraints
+    const supportedModels = ['dall-e-3', 'dall-e-2', 'gpt-image-1'];
+    const supportedSizes: Record<string, string[]> = {
+      'dall-e-3': ['1024x1024', '1792x1024', '1024x1792'],
+      'dall-e-2': ['256x256', '512x512', '1024x1024'],
+      'gpt-image-1': ['1024x1024', '1536x1024', '1024x1536'],
+    };
+    const maxN: Record<string, number> = {
+      'dall-e-3': 1,
+      'dall-e-2': 10,
+      'gpt-image-1': 10,
+    };
+    const supportedQualities: Record<string, ("standard" | "hd" | "low" | "medium" | "high" | "auto")[]> = {
+        'dall-e-3': ['standard', 'hd'],
+        'dall-e-2': [], // No quality options
+        'gpt-image-1': ['low', 'medium', 'high', 'auto'],
+      };      
+    const supportedOutputFormats: string[] = ['png', 'jpeg', 'webp'];
+
+    // Validate model
+    if (!supportedModels.includes(model)) {
+      throw new Error(`[OpenAIImageAdapter] Unsupported model: ${model}. Supported models: ${supportedModels.join(', ')}`);
     }
 
-    async generate(req: ImageRequest): Promise<ImageResponse> {
-        const model = await this.validateModelInternal(req.model, this.defaultModel, this.fallbackModel);
+    // Validate and set size
+    const size = request.size && supportedSizes[model]?.includes(request.size)
+      ? request.size
+      : supportedSizes[model][0] || '1024x1024';
 
-        const body = {
-            model,
-            prompt: req.prompt,
-            n: req.n ?? 1,
-            size: req.size ?? '1024x1024',
-            quality: req.quality ?? 'standard',
-            response_format: 'url',
-        };
+    // Validate and set n
+    const n = Math.min(request.n || 1, maxN[model] || 1);
+    if (request.n && request.n > maxN[model]) {
+      console.warn(`[OpenAIImageAdapter] Requested n=${request.n} exceeds max for ${model} (${maxN[model]}). Using n=${n}.`);
+    }
 
-        console.log('[OpenAIImageAdapter] Sending request:', {
-            endpoint: 'images/generations',
-            body: {
-                ...body,
-                prompt: body.prompt.length > 50 ? body.prompt.slice(0, 50) + '...' : body.prompt,
-            },
-        });
+    // Validate and set quality
+    let quality = request.quality || (model === 'dall-e-3' ? 'standard' : 'auto');
+    if (supportedQualities[model].length > 0 && !supportedQualities[model].includes(quality)) {
+      console.warn(`[OpenAIImageAdapter] Quality ${quality} not supported for model ${model}. Using default: ${supportedQualities[model][0]}.`);
+      quality = supportedQualities[model][0];
+    }
 
+    // Validate output_format for gpt-image-1
+    let output_format = request.output_format || 'png';
+    if (model === 'gpt-image-1' && !supportedOutputFormats.includes(output_format)) {
+      console.warn(`[OpenAIImageAdapter] Output format ${output_format} not supported for gpt-image-1. Using 'png'.`);
+      output_format = 'png';
+    }
+
+    // Build request body
+    const body: any = {
+      prompt: request.prompt,
+      model: model,
+      n: n,
+      size: size,
+    };
+
+    if (model === 'gpt-image-1') {
+      body.output_format = output_format;
+      if (quality !== 'auto') {
+        body.quality = quality; // low, medium, high
+      }
+      // Add optional gpt-image-1 fields if provided
+      if (request.background) body.background = request.background;
+      if (request.moderation !== undefined) body.moderation = request.moderation;
+      if (request.output_compression) body.output_compression = request.output_compression;
+    } else {
+      body.response_format = request.response_format || 'b64_json';
+      if (model === 'dall-e-3' && quality) {
+        body.quality = quality; // standard or hd
+      }
+    }
+
+    // Add user if provided
+    if (request.user) body.user = request.user;
+
+    console.log('[OpenAIImageAdapter] Sending request:', body);
+
+    try {
+      const response = await requestUrl({
+        url: 'https://api.openai.com/v1/images/generations',
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (response.status >= 400) {
+        let errorMessage = `OpenAI error ${response.status}`;
         try {
-            const data = await this.makeRequest('images/generations', body, 'POST');
-
-            if (!data.data || !Array.isArray(data.data) || !data.data[0]?.url) {
-                console.error('[OpenAIImageAdapter] Unexpected response format:', data);
-                throw new Error('Unexpected OpenAI API response format');
-            }
-
-            const imageUrls = data.data.map((item: any) => item.url);
-            console.log('[OpenAIImageAdapter] Response received:', {
-                imageUrls: imageUrls.length,
-                model,
-            });
-
-            return {
-                imageUrls,
-            };
-        } catch (error) {
-            console.error('[OpenAIImageAdapter] Generation error:', error);
-            throw error;
+          const errorBody = response.json?.error || response.text || 'No additional details';
+          console.error('[OpenAIImageAdapter] Detailed error response:', errorBody);
+          errorMessage += `: ${errorBody.message || errorBody}`;
+          if (response.status === 400 && model === 'gpt-image-1' && body.response_format) {
+            errorMessage += '. gpt-image-1 does not support response_format. Use output_format (png, jpeg, webp).';
+          } else if (response.status === 401) {
+            errorMessage += '. Invalid API key. Verify at https://platform.openai.com/account/api-keys.';
+          } else if (response.status === 400) {
+            errorMessage += '. Check request parameters (e.g., size, quality, or model validity).';
+          } else if (response.status === 429) {
+            errorMessage += '. Rate limit exceeded. Check quota at https://platform.openai.com/account/usage.';
+          } else if (response.status === 403) {
+            errorMessage += '. Check API key permissions at https://platform.openai.com/account.';
+          } else if (response.status >= 500) {
+            errorMessage += '. Server error at OpenAI. Try again later.';
+          }
+        } catch (parseError) {
+          errorMessage += ': Failed to parse error details';
         }
+        throw new Error(errorMessage);
+      }
+
+      if (!response.json || !response.json.data) {
+        throw new Error('[OpenAIImageAdapter] Invalid response format from OpenAI API');
+      }
+
+      const imageUrls = response.json.data.map((item: { url?: string; b64_json?: string }) => {
+        if (item.b64_json) {
+          return item.b64_json; // Return raw base64
+        } else if (item.url) {
+          return item.url;
+        }
+        throw new Error('[OpenAIImageAdapter] No valid image data in response');
+      });
+
+      return { imageUrls };
+    } catch (error: any) {
+      console.error('[OpenAIImageAdapter] Image generation failed:', error);
+      throw new Error(`[OpenAIImageAdapter] Failed to generate image: ${error.message || 'Unknown error'}`);
     }
+  }
 }
 ===== src/adapters/text/GeminiTextAdapter.ts =====
 
@@ -3869,69 +4341,77 @@ import type { ImageAdapter, ImageRequest, ImageResponse } from '../core/Adapter'
 import { OpenAIImageAdapter } from '../adapters/image/OpenAIImageAdapter';
 
 export class ImageGateway {
-    private adapters: Record<string, ImageAdapter> = {};
+  private adapters: Record<string, ImageAdapter> = {};
 
-    private constructor(
-        private defaultProvider: string,
-        private backupProvider: string
-    ) {}
+  private constructor(
+    private defaultProvider: string,
+    private backupProvider: string
+  ) {}
 
-    static async create(
-        secrets: SecretsManager,
-        settings: MyPluginSettings
-    ): Promise<ImageGateway> {
-        const gw = new ImageGateway(
-            settings.categories.image.defaultProvider,
-            settings.categories.image.backupProvider
-        );
+  static async create(
+    secrets: SecretsManager,
+    settings: MyPluginSettings
+  ): Promise<ImageGateway> {
+    const gw = new ImageGateway(
+      settings.categories.image.defaultProvider,
+      settings.categories.image.backupProvider
+    );
 
-        for (const key of Object.keys(settings.providers)) {
-            if (!['openai', 'stabilityai', 'grok'].includes(key)) continue; // Only image-capable providers
-            const model = settings.providers[key].model;
-            let apiKey: string | undefined;
+    for (const key of Object.keys(settings.providers)) {
+      if (!['openai', 'stabilityai', 'grok'].includes(key)) {
+        console.warn(`[ImageGateway] Skipping provider ${key}: Not an image-capable provider.`);
+        continue;
+      }
 
-            if (providerMetadata[key].requiresApiKey) {
-                apiKey = await secrets.getSecret(key);
-                if (!apiKey) {
-                    console.warn(`[ImageGateway] No API key found for ${key}. Skipping adapter.`);
-                    continue;
-                }
-            }
+      if (!providerMetadata[key]) {
+        console.warn(`[ImageGateway] Skipping provider ${key}: Not found in providerMetadata.`);
+        continue;
+      }
 
-            let adapter: ImageAdapter;
-            switch (key) {
-                case 'openai':
-                    adapter = new OpenAIImageAdapter(apiKey!, model);
-                    break;
-                // Add other image adapters (e.g., StabilityAI, Grok) when implemented
-                default:
-                    console.warn(`[ImageGateway] Unsupported image provider: ${key}`);
-                    continue;
-            }
+      const model = settings.providers[key].model;
+      let apiKey: string | undefined;
 
-            console.log(`[ImageGateway] Adapter created for ${key} with model: ${model}`);
-            gw.adapters[key] = adapter;
+      if (providerMetadata[key].requiresApiKey) {
+        apiKey = await secrets.getSecret(key);
+        if (!apiKey) {
+          console.warn(`[ImageGateway] No API key found for ${key}. Skipping adapter.`);
+          continue;
         }
+      }
 
-        console.log('[ImageGateway] Initialized adapters:', Object.keys(gw.adapters));
-        return gw;
+      let adapter: ImageAdapter;
+      switch (key) {
+        case 'openai':
+          adapter = new OpenAIImageAdapter(apiKey!, model);
+          break;
+        default:
+          console.warn(`[ImageGateway] Unsupported image provider: ${key}`);
+          continue;
+      }
+
+      console.log(`[ImageGateway] Adapter created for ${key} with model: ${model}`);
+      gw.adapters[key] = adapter;
     }
 
-    async generate(request: ImageRequest): Promise<ImageResponse> {
-        const primary = this.adapters[this.defaultProvider];
-        try {
-            if (!primary) {
-                throw new Error(`No adapter found for default provider: ${this.defaultProvider}`);
-            }
-            return await primary.generate(request);
-        } catch (err) {
-            if (this.backupProvider && this.adapters[this.backupProvider]) {
-                console.log(`[ImageGateway] Falling back to backup provider: ${this.backupProvider}`);
-                return await this.adapters[this.backupProvider].generate(request);
-            }
-            throw err;
-        }
+    console.log('[ImageGateway] Initialized adapters:', Object.keys(gw.adapters));
+    return gw;
+  }
+
+  async generate(request: ImageRequest): Promise<ImageResponse> {
+    const primary = this.adapters[this.defaultProvider];
+    try {
+      if (!primary) {
+        throw new Error(`No adapter found for default provider: ${this.defaultProvider}`);
+      }
+      return await primary.generate(request);
+    } catch (err) {
+      if (this.backupProvider && this.adapters[this.backupProvider]) {
+        console.log(`[ImageGateway] Falling back to backup provider: ${this.backupProvider}`);
+        return await this.adapters[this.backupProvider].generate(request);
+      }
+      throw err;
     }
+  }
 }
 ===== src/gateways/TextGateway.ts =====
 
