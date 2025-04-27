@@ -1562,485 +1562,6 @@ export interface MyPluginSettings {
     categories: Record<Category, CategorySettings>;
     providers: Record<string, ProviderConfig>;
 }
-===== src/settings/providers/anthropic.ts =====
-
-import { requestUrl } from 'obsidian';
-
-// Define response types based on Anthropic API documentation
-interface AnthropicModel {
-    id: string;
-    created_at: string;
-    display_name: string;
-    type: string;
-}
-
-interface AnthropicAPIResponse {
-    data: AnthropicModel[];
-    first_id: string | null;
-    last_id: string | null;
-    has_more: boolean;
-}
-
-export async function fetchAnthropicModels(apiKey: string): Promise<string[]> {
-    const models: string[] = [];
-    let hasMore = true;
-    let afterId: string | null = null;
-    const apiVersion = '2023-06-01'; // Set to a stable, supported version
-    const limit = 100; // Increase limit to get more models in one request
-
-    try {
-        while (hasMore) {
-            const url = new URL('https://api.anthropic.com/v1/models');
-            url.searchParams.append('limit', limit.toString());
-            if (afterId) {
-                url.searchParams.append('after_id', afterId);
-            }
-
-            console.log('[Anthropic] Sending request:', {
-                url: url.toString(),
-                headers: { 'x-api-key': '[REDACTED]', 'anthropic-version': apiVersion }
-            });
-
-            const response = await requestUrl({
-                url: url.toString(),
-                method: 'GET',
-                headers: {
-                    'x-api-key': apiKey.trim(),
-                    'anthropic-version': apiVersion
-                }
-            });
-
-            if (response.status >= 400) {
-                let errorMessage = `Anthropic error: ${response.status}`;
-                try {
-                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
-                    console.log('[Anthropic] Error response body:', errorBody);
-                    errorMessage += ` - ${errorBody}`;
-                    if (response.status === 401) {
-                        errorMessage += '. Invalid API key.';
-                    }
-                } catch {
-                    errorMessage += ' - Failed to parse error details';
-                }
-                throw new Error(errorMessage);
-            }
-
-            const data = response.json as AnthropicAPIResponse;
-            
-            if (!data.data || !Array.isArray(data.data)) {
-                console.error('[Anthropic] Unexpected response format:', data);
-                throw new Error('Unexpected API response format');
-            }
-            
-            const modelIds = data.data.map(m => m.id);
-            models.push(...modelIds);
-            
-            hasMore = data.has_more;
-            afterId = data.last_id;
-
-            console.log('[Anthropic] Fetched models:', modelIds, 'Has more:', hasMore);
-            
-            if (!hasMore || !afterId) break;
-        }
-
-        return models;
-    } catch (error) {
-        console.error('[Anthropic] Model fetch error:', error);
-        throw error;
-    }
-}
-===== src/settings/providers/openai.ts =====
-
-import { requestUrl } from 'obsidian';
-
-export async function fetchOpenAIModels(apiKey: string): Promise<string[]> {
-	try {
-		const url = 'https://api.openai.com/v1/models';
-		const response = await requestUrl({
-			url,
-			method: 'GET',
-			headers: { Authorization: `Bearer ${apiKey}` }
-		});
-
-		if (response.status >= 400) {
-			throw new Error(`OpenAI error: ${response.status} ${response.text}`);
-		}
-		return response.json.data?.map((m: any) => m.id).sort() ?? [];
-	} catch (err) {
-		console.error('[OpenAI] Model fetch error:', err);
-		throw err;
-	}
-}
-===== src/settings/providers/stabilityai.ts =====
-
-import { requestUrl } from 'obsidian';
-
-interface StabilityAIEngine {
-    id: string;
-    name: string;
-    description: string;
-    type: string;
-}
-
-interface ModelInfo {
-    id: string;
-    languages: string[];
-}
-
-interface CategorizedModels {
-    Media: ModelInfo[];
-    Language: ModelInfo[];
-    '3D': ModelInfo[];
-    Audio: ModelInfo[];
-}
-
-// Fallback list of models with categories and languages, based on the provided table
-const fallbackModels: CategorizedModels = {
-    Media: [
-        { id: 'stable-diffusion-3-5-medium', languages: ['English'] },
-        { id: 'stable-diffusion-3-5-large', languages: ['English'] },
-        { id: 'stable-diffusion-3-5-large-turbo', languages: ['English'] },
-        { id: 'stable-diffusion-3-medium', languages: ['English'] },
-        { id: 'stable-diffusion-xl-turbo', languages: ['English'] },
-        { id: 'stable-diffusion-turbo', languages: ['English'] },
-        { id: 'stable-video-diffusion-14-frame', languages: ['English'] },
-        { id: 'stable-video-diffusion-25-frame', languages: ['English'] },
-        { id: 'stable-video-diffusion-1-1', languages: ['English'] },
-        { id: 'japanese-sdxl', languages: ['Japanese'] },
-        { id: 'japanese-stable-clip', languages: ['Japanese'] },
-        // Include V1 models seen in previous API response
-        { id: 'stable-diffusion-v1-6', languages: ['English'] },
-        { id: 'stable-diffusion-xl-1024-v1-0', languages: ['English'] }
-    ],
-    Language: [
-        { id: 'stable-lm-2-12b', languages: ['English', 'Spanish', 'German', 'Italian', 'French', 'Portuguese', 'Dutch'] },
-        { id: 'stable-lm-2-1-6b', languages: ['English', 'Spanish', 'German', 'Italian', 'French', 'Portuguese', 'Dutch'] },
-        { id: 'stable-lm-zephyr-3b', languages: ['English'] },
-        { id: 'japanese-stable-lm-2-1-6b', languages: ['Japanese'] },
-        { id: 'japanese-stable-vlm', languages: ['Japanese'] },
-        { id: 'stable-code-instruct-3b', languages: ['English', 'Code'] },
-        { id: 'stable-code-3b', languages: ['English', 'Code'] }
-    ],
-    '3D': [
-        { id: 'stable-point-aware-3d', languages: ['English'] },
-        { id: 'stable-fast-3d', languages: ['English'] },
-        { id: 'stable-zero123c', languages: ['English'] },
-        { id: 'stable-video-3d', languages: ['English'] }
-    ],
-    Audio: [
-        { id: 'stable-audio-open-1-0', languages: ['English'] }
-    ]
-};
-
-// Function to map API engine types to plugin categories
-function mapEngineTypeToCategory(engineType: string, engineId: string): keyof CategorizedModels {
-    // Map based on engine type and ID patterns
-    if (engineType === 'PICTURE' || engineType === 'VIDEO' || engineId.includes('video-diffusion') || engineId.includes('sdxl') || engineId.includes('stable-diffusion')) {
-        return 'Media';
-    } else if (engineType === 'AUDIO' || engineId.includes('audio')) {
-        return 'Audio';
-    } else if (engineType === '3D' || engineId.includes('3d')) {
-        return '3D';
-    } else if (engineType === 'TEXT' || engineId.includes('lm') || engineId.includes('code')) {
-        return 'Language';
-    }
-    // Default to Media for unknown types, as most Stability AI models are image-related
-    return 'Media';
-}
-
-// Helper to merge fetched models with fallback models, avoiding duplicates
-function mergeModels(fetched: CategorizedModels, fallback: CategorizedModels): CategorizedModels {
-    const result: CategorizedModels = { Media: [], Language: [], '3D': [], Audio: [] };
-    const categories: (keyof CategorizedModels)[] = ['Media', 'Language', '3D', 'Audio'];
-
-    for (const category of categories) {
-        const fetchedIds = new Set(fetched[category].map(model => model.id));
-        const merged = [...fetched[category]];
-
-        // Add fallback models that weren't fetched
-        for (const fallbackModel of fallback[category]) {
-            if (!fetchedIds.has(fallbackModel.id)) {
-                merged.push(fallbackModel);
-            }
-        }
-
-        // Sort models by ID for consistency
-        result[category] = merged.sort((a, b) => a.id.localeCompare(b.id));
-    }
-
-    return result;
-}
-
-export async function fetchStabilityAIModels(apiKey: string): Promise<string[]> {
-    const categorizedModels: CategorizedModels = {
-        Media: [],
-        Language: [],
-        '3D': [],
-        Audio: []
-    };
-    let lastError: Error | null = null;
-
-    // Try multiple API versions to fetch models
-    const apiVersions = ['v1', 'v1beta'];
-    for (const apiVersion of apiVersions) {
-        const url = `https://api.stability.ai/${apiVersion}/engines/list`;
-        console.log('[StabilityAI] Sending request:', {
-            url,
-            headers: {
-                Authorization: '[REDACTED]',
-                'Stability-Client-ID': 'obsidian-ai-plugin',
-                'Stability-Client-Version': '1.0.0'
-            }
-        });
-
-        try {
-            const response = await requestUrl({
-                url,
-                method: 'GET',
-                headers: {
-                    Authorization: `Bearer ${apiKey.trim()}`,
-                    'Content-Type': 'application/json',
-                    'Stability-Client-ID': 'obsidian-ai-plugin',
-                    'Stability-Client-Version': '1.0.0'
-                    // Uncomment and set the Organization header if needed
-                    // 'Organization': 'org-123456'
-                }
-            });
-
-            if (response.status >= 400) {
-                let errorMessage = `Stability AI error (${apiVersion}): ${response.status}`;
-                try {
-                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
-                    console.log('[StabilityAI] Error response body:', errorBody);
-                    errorMessage += ` - ${errorBody}`;
-                    if (response.status === 401) {
-                        errorMessage += '. Invalid API key.';
-                    } else if (response.status === 500) {
-                        errorMessage += '. Server error occurred.';
-                    }
-                } catch {
-                    errorMessage += ' - Failed to parse error details';
-                }
-                throw new Error(errorMessage);
-            }
-
-            const data = response.json as StabilityAIEngine[];
-            if (!Array.isArray(data)) {
-                console.error('[StabilityAI] Unexpected response format:', data);
-                throw new Error('Unexpected API response format');
-            }
-
-            // Categorize fetched models
-            for (const engine of data) {
-                const category = mapEngineTypeToCategory(engine.type, engine.id);
-                // Assume English as the default language unless specified in fallback
-                const modelInfo: ModelInfo = { id: engine.id, languages: ['English'] };
-                // Update languages if the model is in the fallback list
-                for (const cat of Object.keys(fallbackModels) as (keyof CategorizedModels)[]) {
-                    const fallbackModel = fallbackModels[cat].find(m => m.id === engine.id);
-                    if (fallbackModel) {
-                        modelInfo.languages = fallbackModel.languages;
-                        break;
-                    }
-                }
-                categorizedModels[category].push(modelInfo);
-            }
-
-            console.log(`[StabilityAI] Fetched models from ${apiVersion}:`, categorizedModels);
-        } catch (err) {
-            console.error(`[StabilityAI] Error for API version ${apiVersion}:`, err);
-            lastError = err;
-            continue;
-        }
-    }
-
-    // Merge with fallback models to ensure all models from the table are included
-    const finalModels = mergeModels(categorizedModels, fallbackModels);
-
-    // Log the final categorized models
-    console.log('[StabilityAI] Final categorized model list:', finalModels);
-
-    // For compatibility with the current plugin, return a flat list of all model IDs
-    // The settings redesign can use the categorized structure directly
-    const flatModelList = [
-        ...finalModels.Media,
-        ...finalModels.Language,
-        ...finalModels['3D'],
-        ...finalModels.Audio
-    ].map(model => model.id).sort();
-
-    if (flatModelList.length === 0) {
-        throw lastError || new Error('Failed to fetch models with all API versions and no fallback available');
-    }
-
-    return flatModelList;
-}
-
-// Export the categorized models for use in the settings redesign
-export function getCategorizedStabilityAIModels(): CategorizedModels {
-    // This assumes fetchStabilityAIModels has been called and cached the results
-    // For now, return the fallback models; in a real implementation, you'd cache the fetched results
-    return fallbackModels;
-}
-===== src/settings/providers/groq.ts =====
-
-import { requestUrl } from 'obsidian';
-
-export async function fetchGroqModels(apiKey: string): Promise<string[]> {
-	try {
-		const url = 'https://api.groq.com/openai/v1/models';
-		const response = await requestUrl({
-			url,
-			method: 'GET',
-			headers: { Authorization: `Bearer ${apiKey}` }
-		});
-
-		if (response.status >= 400) {
-			throw new Error(`Groq error: ${response.status} ${response.text}`);
-		}
-		return response.json.data?.map((m: any) => m.id).sort() ?? [];
-	} catch (err) {
-		console.error('[Groq] Model fetch error:', err);
-		throw err;
-	}
-}
-===== src/settings/providers/gemini.ts =====
-
-import { requestUrl } from 'obsidian';
-
-/**
- * Interface representing the structure of a single model object
- * returned by the Gemini API's models.list method.
- */
-interface GeminiModel {
-  name: string; // e.g., "models/gemini-1.5-flash-001"
-  baseModelId?: string; // e.g., "gemini-1.5-flash"
-  version?: string; // e.g., "001"
-  displayName?: string; // e.g., "Gemini 1.5 Flash"
-  description?: string;
-  inputTokenLimit?: number;
-  outputTokenLimit?: number;
-  supportedGenerationMethods?: string[];
-  temperature?: number;
-  topP?: number;
-  topK?: number;
-}
-
-/**
- * Interface representing the overall response structure
- * from the Gemini API's models.list method.
- */
-interface GeminiListModelsResponse {
-  models?: GeminiModel[];
-  nextPageToken?: string; // For handling pagination if needed
-}
-
-/**
- * Fetches the list of available models from the Google Gemini API.
- *
- * @param apiKey - The API key for authenticating with the Google Generative Language API.
- * @returns A promise that resolves to an array of model names (e.g., "models/gemini-pro").
- * @throws An error if the API request fails or returns an error status.
- */
-/**
- * Fetches available models from the Gemini API.
- * Ensures model names are correctly formatted for use in generateContent endpoint.
- */
-export async function fetchGeminiModels(apiKey: string): Promise<string[]> {
-	try {
-	  // Try v1 first, then fallback to v1beta
-	  const apiVersions = ['v1', 'v1beta'];
-	  let lastError: Error | null = null;
-  
-	  for (const apiVersion of apiVersions) {
-		const url = `https://generativelanguage.googleapis.com/${apiVersion}/models?key=${apiKey}`;
-		console.log('[fetchGeminiModels] Fetching models with URL:', url);
-  
-		try {
-		  const resp = await requestUrl({
-			url,
-			method: 'GET',
-		  });
-  
-		  if (resp.status !== 200) {
-			throw new Error(`Failed to fetch Gemini models: ${resp.status} - ${resp.text || 'No details'}`);
-		  }
-  
-		  const data = resp.json as { models: { name: string }[] };
-		  // Normalize model names by removing 'models/' prefix
-		  const models = data.models
-			.map(m => m.name.replace(/^models\//, ''))
-			.filter(m => m.startsWith('gemini')); // Only include Gemini models
-		  console.log('[fetchGeminiModels] Fetched models:', models);
-		  return models;
-		} catch (error) {
-		  console.error('[fetchGeminiModels] Error for API version', apiVersion, ':', error);
-		  lastError = error;
-		  continue;
-		}
-	  }
-  
-	  throw lastError || new Error('Failed to fetch models with all API versions');
-	} catch (error) {
-	  console.error('[fetchGeminiModels] Error:', error);
-	  return ['gemini-1.5-pro-latest', 'gemini-1.5-flash-latest']; // Fallback models
-	}
-  }
-===== src/settings/providers/grok.ts =====
-
-import { requestUrl } from 'obsidian';
-
-interface XAIModel {
-    id: string;
-    created: number;
-    object: string;
-    owned_by: string;
-}
-
-interface XAIAPIResponse {
-    data: XAIModel[];
-}
-
-export async function fetchGrokModels(apiKey: string): Promise<string[]> {
-    try {
-        const url = 'https://api.x.ai/v1/models';
-        console.log('[Grok] Sending request:', {
-            url,
-            headers: { Authorization: `Bearer ${apiKey.trim()}` }
-        });
-
-        const response = await requestUrl({
-            url,
-            method: 'GET',
-            headers: {
-                Authorization: `Bearer ${apiKey.trim()}`,
-                'Content-Type': 'application/json' // Added for compatibility
-            }
-        });
-
-        if (response.status >= 400) {
-            let errorMessage = `xAI error: ${response.status}`;
-            try {
-                const errorBody = response.json?.error?.message || response.text || 'No additional details';
-                console.log('[Grok] Error response body:', errorBody);
-                errorMessage += ` - ${errorBody}`;
-                if (response.status === 403) {
-                    errorMessage += '. Check your API key, permissions, or account status at console.x.ai.';
-                }
-            } catch {
-                errorMessage += ' - Failed to parse error details';
-            }
-            throw new Error(errorMessage);
-        }
-
-        const models = (response.json as XAIAPIResponse).data?.map(m => m.id).sort() ?? [];
-        console.log('[Grok] Fetched models:', models);
-        return models;
-    } catch (err) {
-        console.error('[Grok] Model fetch error:', err);
-        throw err;
-    }
-}
 ===== src/settings/providers/local.ts =====
 
 import { requestUrl } from 'obsidian';
@@ -2056,39 +1577,17 @@ export async function fetchLocalModels(): Promise<string[]> {
 		throw new Error("Unable to connect to Ollama at http://localhost:11434");
 	}
 }
-===== src/settings/providers/openrouter.ts =====
-
-import { requestUrl } from 'obsidian';
-
-export async function fetchOpenRouterModels(apiKey: string): Promise<string[]> {
-	try {
-		const url = 'https://openrouter.ai/api/v1/models';
-		const response = await requestUrl({
-			url,
-			method: 'GET',
-			headers: { Authorization: `Bearer ${apiKey}` }
-		});
-
-		if (response.status >= 400) {
-			throw new Error(`OpenRouter error: ${response.status} ${response.text}`);
-		}
-		return response.json.data?.map((m: any) => m.id).sort() ?? [];
-	} catch (err) {
-		console.error('[OpenRouter] Model fetch error:', err);
-		throw err;
-	}
-}
 ===== src/settings/providers/index.ts =====
 
 import { App } from 'obsidian';
-import { fetchOpenAIModels } from './openai';
+import { AnthropicBaseAdapter } from '../../adapters/base/AnthropicBaseAdapter';
+import { GeminiBaseAdapter } from '../../adapters/base/GeminiBaseAdapter';
+import { GrokBaseAdapter } from '../../adapters/base/GrokBaseAdapter';
+import { GroqBaseAdapter } from '../../adapters/base/GroqBaseAdapter';
+import { OpenAIBaseAdapter } from '../../adapters/base/OpenAIBaseAdapter';
+import { OpenRouterBaseAdapter } from '../../adapters/base/OpenRouterBaseAdapter';
+import { StabilityAIBaseAdapter } from '../../adapters/base/StabilityAIBaseAdapter';
 import { fetchLocalModels } from './local';
-import { fetchAnthropicModels } from './anthropic';
-import { fetchGroqModels } from './groq';
-import { fetchGeminiModels } from './gemini';
-import { fetchOpenRouterModels } from './openrouter';
-import { fetchGrokModels } from './grok';
-import { fetchStabilityAIModels } from './stabilityai'; // Added Stability AI fetcher
 
 export interface ProviderMetadata {
     key: string;
@@ -2098,27 +1597,40 @@ export interface ProviderMetadata {
 
 export const providerMetadata: Record<string, ProviderMetadata> = {
     openai: { key: 'openai', defaultModel: 'gpt-3.5-turbo', requiresApiKey: true },
-    local: { key: 'local', defaultModel: 'llama2', requiresApiKey: false }, // Ollama
+    local: { key: 'local', defaultModel: 'llama2', requiresApiKey: false },
     anthropic: { key: 'anthropic', defaultModel: 'claude-3-opus-20240229', requiresApiKey: true },
-    groq: { key: 'groq', defaultModel: 'mixtral-8x7b-32768', requiresApiKey: true }, // GroqCloud
-    gemini: { key: 'gemini', defaultModel: 'models/gemini-pro', requiresApiKey: true }, // Google Gemini
+    groq: { key: 'groq', defaultModel: 'mixtral-8x7b-32768', requiresApiKey: true },
+    gemini: { key: 'gemini', defaultModel: 'models/gemini-pro', requiresApiKey: true },
     openrouter: { key: 'openrouter', defaultModel: 'openrouter/google/gemma-7b-it', requiresApiKey: true },
-    grok: { key: 'grok', defaultModel: 'grok-1', requiresApiKey: true }, // x.ai Grok
-    stabilityai: { key: 'stabilityai', defaultModel: 'stable-diffusion-xl-v1', requiresApiKey: true } // Stability AI
+    grok: { key: 'grok', defaultModel: 'grok-1', requiresApiKey: true },
+    stabilityai: { key: 'stabilityai', defaultModel: 'stable-diffusion-xl-v1', requiresApiKey: true }
 };
 
-// Updated FetchFunction type to accept optional apiKey and app
 type FetchFunction = (apiKey: string, app?: App) => Promise<string[]>;
 
 export const providerFetchers: Record<string, FetchFunction> = {
-    openai: fetchOpenAIModels,
+    openai: async (apiKey: string) => {
+        return await OpenAIBaseAdapter.fetchModels(apiKey);
+    },
     local: fetchLocalModels,
-    anthropic: fetchAnthropicModels,
-    groq: fetchGroqModels,
-    gemini: fetchGeminiModels,
-    openrouter: fetchOpenRouterModels,
-    grok: fetchGrokModels,
-    stabilityai: fetchStabilityAIModels // Added Stability AI fetcher
+    anthropic: async (apiKey: string) => {
+        return await AnthropicBaseAdapter.fetchModels(apiKey);
+    },
+    groq: async (apiKey: string) => {
+        return await GroqBaseAdapter.fetchModels(apiKey);
+    },
+    gemini: async (apiKey: string) => {
+        return await GeminiBaseAdapter.fetchModels(apiKey);
+    },
+    openrouter: async (apiKey: string) => {
+        return await OpenRouterBaseAdapter.fetchModels(apiKey);
+    },
+    grok: async (apiKey: string) => {
+        return await GrokBaseAdapter.fetchModels(apiKey);
+    },
+    stabilityai: async (apiKey: string) => {
+        return await StabilityAIBaseAdapter.fetchModels(apiKey);
+    }
 };
 ===== src/settings/components/ProviderSelector.ts =====
 
@@ -2973,9 +2485,7 @@ export class OpenRouterTextAdapter extends OpenRouterBaseAdapter implements LLMA
 ===== src/adapters/text/AnthropicTextAdapter.ts =====
 
 // src/adapters/text/AnthropicTextAdapter.ts
-import { requestUrl } from 'obsidian';
 import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
-import { fetchAnthropicModels } from '../../settings/providers/anthropic';
 import { AnthropicBaseAdapter } from '../base/AnthropicBaseAdapter';
 
 export class AnthropicTextAdapter extends AnthropicBaseAdapter implements LLMAdapter {
@@ -3107,9 +2617,7 @@ export class GroqTextAdapter extends GroqBaseAdapter implements LLMAdapter {
 }
 ===== src/adapters/base/OpenRouterBaseAdapter.ts =====
 
-
 import { requestUrl } from 'obsidian';
-import { fetchOpenRouterModels } from '../../settings/providers/openrouter';
 
 export abstract class OpenRouterBaseAdapter {
     protected apiKey: string;
@@ -3146,13 +2654,13 @@ export abstract class OpenRouterBaseAdapter {
                     console.error(`[${this.constructor.name}] Error response body:`, errorBody);
                     errorMessage += `: ${errorBody}`;
                     if (response.status === 401) {
-                        errorMessage += '. Invalid API key. Verify your OpenRouter API key in settings at https://openrouter.ai/keys.';
+                        errorMessage += '. Invalid API key. Verify your OpenRouter API key at https://openrouter.ai/keys.';
                     } else if (response.status === 400) {
                         errorMessage += '. Check request parameters or model validity.';
                     } else if (response.status === 429) {
-                        errorMessage += '. Rate limit exceeded. Try again later or check your OpenRouter account at https://openrouter.ai/keys.';
+                        errorMessage += '. Rate limit exceeded. Try again later or check your OpenRouter quota at https://openrouter.ai/account.';
                     } else if (response.status === 403) {
-                        errorMessage += '. Check your API key permissions or account status at https://openrouter.ai/keys.';
+                        errorMessage += '. Check your API key permissions or account status at https://openrouter.ai/account.';
                     } else if (response.status >= 500) {
                         errorMessage += '. Server error at OpenRouter. Try again later or contact OpenRouter support.';
                     }
@@ -3177,7 +2685,7 @@ export abstract class OpenRouterBaseAdapter {
         const candidateModel = model || defaultModel;
 
         try {
-            const availableModels = await fetchOpenRouterModels(this.apiKey);
+            const availableModels = await OpenRouterBaseAdapter.fetchModels(this.apiKey);
             console.log(`[${this.constructor.name}] Available models:`, availableModels);
 
             if (availableModels.includes(candidateModel)) {
@@ -3201,17 +2709,208 @@ export abstract class OpenRouterBaseAdapter {
             return finalFallback;
         }
     }
+
+    public static async fetchModels(apiKey: string): Promise<string[]> {
+        try {
+            if (!apiKey) {
+                throw new Error(`[OpenRouterBaseAdapter] API key is required for fetching models.`);
+            }
+            const url = 'https://openrouter.ai/api/v1/models';
+            console.log(`[OpenRouterBaseAdapter] Sending model fetch request:`, {
+                url,
+                headers: { Authorization: `Bearer ${apiKey.trim()}` }
+            });
+
+            const response = await requestUrl({
+                url,
+                method: 'GET',
+                headers: {
+                    Authorization: `Bearer ${apiKey.trim()}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `openrouter error: ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.log(`[OpenRouterBaseAdapter] Error response body:`, errorBody);
+                    errorMessage += ` - ${errorBody}`;
+                    if (response.status === 401) {
+                        errorMessage += '. Invalid API key. Verify your OpenRouter API key at https://openrouter.ai/keys.';
+                    } else if (response.status === 403) {
+                        errorMessage += '. Check your API key permissions or account status at https://openrouter.ai/account.';
+                    }
+                } catch {
+                    errorMessage += ' - Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+
+            const models = (response.json as { data: { id: string }[] }).data
+                ?.map(m => m.id)
+                .sort() ?? [];
+            console.log(`[OpenRouterBaseAdapter] Fetched models:`, models);
+            return models;
+        } catch (error) {
+            console.error(`[OpenRouterBaseAdapter] Model fetch error:`, error);
+            throw error;
+        }
+    }
+}
+===== src/adapters/base/StabilityAIBaseAdapter.ts =====
+
+import { requestUrl } from 'obsidian';
+
+export abstract class StabilityAIBaseAdapter {
+    protected apiKey: string;
+    public providerKey = 'stabilityai';
+
+    constructor(apiKey: string) {
+        if (!apiKey) {
+            throw new Error(`[${this.constructor.name}] API key is required.`);
+        }
+        this.apiKey = apiKey.trim();
+        console.log(`[${this.constructor.name}] Initialized for provider: ${this.providerKey}`);
+        console.log(`[${this.constructor.name}] API key provided: [REDACTED]`);
+    }
+
+    protected async makeRequest(endpoint: string, body: any, method: 'POST' | 'GET' = 'POST'): Promise<any> {
+        const url = `https://api.stability.ai/v1/${endpoint}`;
+        console.log(`[${this.constructor.name}] Sending ${method} request to ${url}`);
+
+        try {
+            const response = await requestUrl({
+                url,
+                method,
+                headers: {
+                    Authorization: `Bearer ${this.apiKey}`,
+                    'Content-Type': 'application/json',
+                },
+                body: method === 'POST' ? JSON.stringify(body) : undefined,
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `${this.providerKey} error ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.error(`[${this.constructor.name}] Error response body:`, errorBody);
+                    errorMessage += `: ${errorBody}`;
+                    if (response.status === 401) {
+                        errorMessage += '. Invalid API key. Verify your StabilityAI API key at https://platform.stability.ai/account/keys.';
+                    } else if (response.status === 400) {
+                        errorMessage += '. Check request parameters or model validity.';
+                    } else if (response.status === 429) {
+                        errorMessage += '. Rate limit exceeded. Try again later or check your StabilityAI quota at https://platform.stability.ai/account/credits.';
+                    } else if (response.status === 403) {
+                        errorMessage += '. Check your API key permissions or account status at https://platform.stability.ai/account.';
+                    } else if (response.status >= 500) {
+                        errorMessage += '. Server error at StabilityAI. Try again later or contact StabilityAI support.';
+                    }
+                } catch (parseError) {
+                    errorMessage += ': Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+            return response.json;
+        } catch (error) {
+            console.error(`[${this.constructor.name}] API request failed:`, error);
+            throw error;
+        }
+    }
+
+    protected async validateModelInternal(
+        model: string | undefined,
+        defaultModel: string,
+        fallbackModel: string
+    ): Promise<string> {
+        console.log(`[${this.constructor.name}] Validating model: ${model || 'undefined'} (default: ${defaultModel}, fallback: ${fallbackModel})`);
+        const candidateModel = model || defaultModel;
+
+        try {
+            const availableModels = await StabilityAIBaseAdapter.fetchModels(this.apiKey);
+            console.log(`[${this.constructor.name}] Available models:`, availableModels);
+
+            if (availableModels.includes(candidateModel)) {
+                console.log(`[${this.constructor.name}] Model validated:`, candidateModel);
+                return candidateModel;
+            }
+            if (availableModels.includes(defaultModel)) {
+                console.warn(`[${this.constructor.name}] Invalid model '${candidateModel}', falling back to default '${defaultModel}'`);
+                return defaultModel;
+            }
+            if (availableModels.includes(fallbackModel)) {
+                console.warn(`[${this.constructor.name}] Invalid models '${candidateModel}' and '${defaultModel}', falling back to known '${fallbackModel}'`);
+                return fallbackModel;
+            }
+            console.error(`[${this.constructor.name}] No valid models available from list:`, availableModels);
+            throw new Error(`No valid ${this.providerKey} models available.`);
+        } catch (error) {
+            console.error(`[${this.constructor.name}] Error fetching/validating models:`, error);
+            const finalFallback = defaultModel || fallbackModel;
+            console.warn(`[${this.constructor.name}] Using fallback model due to error:`, finalFallback);
+            return finalFallback;
+        }
+    }
+
+    public static async fetchModels(apiKey: string): Promise<string[]> {
+        try {
+            if (!apiKey) {
+                throw new Error(`[StabilityAIBaseAdapter] API key is required for fetching models.`);
+            }
+            const url = 'https://api.stability.ai/v1/engines/list';
+            console.log(`[StabilityAIBaseAdapter] Sending model fetch request:`, {
+                url,
+                headers: { Authorization: `Bearer ${apiKey.trim()}` }
+            });
+
+            const response = await requestUrl({
+                url,
+                method: 'GET',
+                headers: {
+                    Authorization: `Bearer ${apiKey.trim()}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `stabilityai error: ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.log(`[StabilityAIBaseAdapter] Error response body:`, errorBody);
+                    errorMessage += ` - ${errorBody}`;
+                    if (response.status === 401) {
+                        errorMessage += '. Invalid API key. Verify your StabilityAI API key at https://platform.stability.ai/account/keys.';
+                    } else if (response.status === 403) {
+                        errorMessage += '. Check your API key permissions or account status at https://platform.stability.ai/account.';
+                    }
+                } catch {
+                    errorMessage += ' - Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+
+            const models = (response.json as { id: string }[])
+                ?.map(m => m.id)
+                .filter(id => id.includes('stable-diffusion'))
+                .sort() ?? [];
+            console.log(`[StabilityAIBaseAdapter] Fetched models:`, models);
+            return models;
+        } catch (error) {
+            console.error(`[StabilityAIBaseAdapter] Model fetch error:`, error);
+            throw error;
+        }
+    }
 }
 ===== src/adapters/base/AnthropicBaseAdapter.ts =====
 
-// src/adapters/base/AnthropicBaseAdapter.ts
 import { requestUrl } from 'obsidian';
-import { fetchAnthropicModels } from '../../settings/providers/anthropic';
+import type { LLMRequest, LLMResponse } from '../../core/Adapter';
 
 export abstract class AnthropicBaseAdapter {
     protected apiKey: string;
     protected apiVersion = '2023-06-01';
-    public providerKey = 'anthropic'; // Changed from protected to public
+    public providerKey = 'anthropic';
 
     constructor(apiKey: string) {
         if (!apiKey) {
@@ -3269,7 +2968,7 @@ export abstract class AnthropicBaseAdapter {
         console.log(`[${this.constructor.name}] Validating model: ${model || 'undefined'} (default: ${defaultModel}, fallback: ${fallbackModel})`);
         const candidateModel = model || defaultModel;
         try {
-            const availableModels = await fetchAnthropicModels(this.apiKey);
+            const availableModels = await AnthropicBaseAdapter.fetchModels(this.apiKey);
             console.log(`[${this.constructor.name}] Available models:`, availableModels);
             if (availableModels.includes(candidateModel)) {
                 console.log(`[${this.constructor.name}] Model validated:`, candidateModel);
@@ -3292,13 +2991,83 @@ export abstract class AnthropicBaseAdapter {
             return finalFallback;
         }
     }
-}
 
-import type { LLMRequest, LLMResponse } from '../../core/Adapter';
+    public static async fetchModels(apiKey: string): Promise<string[]> {
+        const models: string[] = [];
+        let hasMore = true;
+        let afterId: string | null = null;
+        const limit = 100;
+        const apiVersion = '2023-06-01';
+
+        try {
+            if (!apiKey) {
+                throw new Error(`[AnthropicBaseAdapter] API key is required for fetching models.`);
+            }
+
+            while (hasMore) {
+                const url = new URL('https://api.anthropic.com/v1/models');
+                url.searchParams.append('limit', limit.toString());
+                if (afterId) {
+                    url.searchParams.append('after_id', afterId);
+                }
+
+                console.log(`[AnthropicBaseAdapter] Sending model fetch request:`, {
+                    url: url.toString(),
+                    headers: { 'x-api-key': '[REDACTED]', 'anthropic-version': apiVersion }
+                });
+
+                const response = await requestUrl({
+                    url: url.toString(),
+                    method: 'GET',
+                    headers: {
+                        'x-api-key': apiKey.trim(),
+                        'anthropic-version': apiVersion
+                    }
+                });
+
+                if (response.status >= 400) {
+                    let errorMessage = `anthropic error: ${response.status}`;
+                    try {
+                        const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                        console.log(`[AnthropicBaseAdapter] Error response body:`, errorBody);
+                        errorMessage += ` - ${errorBody}`;
+                        if (response.status === 401) {
+                            errorMessage += '. Invalid API key.';
+                        }
+                    } catch {
+                        errorMessage += ' - Failed to parse error details';
+                    }
+                    throw new Error(errorMessage);
+                }
+
+                const data = response.json as { data: { id: string }[], has_more: boolean, last_id: string | null };
+                
+                if (!data.data || !Array.isArray(data.data)) {
+                    console.error(`[AnthropicBaseAdapter] Unexpected response format:`, data);
+                    throw new Error('Unexpected API response format');
+                }
+                
+                const modelIds = data.data.map(m => m.id);
+                models.push(...modelIds);
+                
+                hasMore = data.has_more;
+                afterId = data.last_id;
+
+                console.log(`[AnthropicBaseAdapter] Fetched models:`, modelIds, 'Has more:', hasMore);
+                
+                if (!hasMore || !afterId) break;
+            }
+
+            return models;
+        } catch (error) {
+            console.error(`[AnthropicBaseAdapter] Model fetch error:`, error);
+            throw error;
+        }
+    }
+}
 ===== src/adapters/base/GrokBaseAdapter.ts =====
 
 import { requestUrl } from 'obsidian';
-import { fetchGrokModels } from '../../settings/providers/grok';
 
 export abstract class GrokBaseAdapter {
     protected apiKey: string;
@@ -3366,7 +3135,7 @@ export abstract class GrokBaseAdapter {
         const candidateModel = model || defaultModel;
 
         try {
-            const availableModels = await fetchGrokModels(this.apiKey);
+            const availableModels = await GrokBaseAdapter.fetchModels(this.apiKey);
             console.log(`[${this.constructor.name}] Available models:`, availableModels);
 
             if (availableModels.includes(candidateModel)) {
@@ -3390,11 +3159,54 @@ export abstract class GrokBaseAdapter {
             return finalFallback;
         }
     }
+
+    public static async fetchModels(apiKey: string): Promise<string[]> {
+        try {
+            if (!apiKey) {
+                throw new Error(`[GrokBaseAdapter] API key is required for fetching models.`);
+            }
+            const url = 'https://api.x.ai/v1/models';
+            console.log(`[GrokBaseAdapter] Sending model fetch request:`, {
+                url,
+                headers: { Authorization: `Bearer ${apiKey.trim()}` }
+            });
+
+            const response = await requestUrl({
+                url,
+                method: 'GET',
+                headers: {
+                    Authorization: `Bearer ${apiKey.trim()}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `grok error: ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.log(`[GrokBaseAdapter] Error response body:`, errorBody);
+                    errorMessage += ` - ${errorBody}`;
+                    if (response.status === 403) {
+                        errorMessage += '. Check your API key, permissions, or account status at console.x.ai.';
+                    }
+                } catch {
+                    errorMessage += ' - Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+
+            const models = (response.json as { data: { id: string }[] }).data?.map(m => m.id).sort() ?? [];
+            console.log(`[GrokBaseAdapter] Fetched models:`, models);
+            return models;
+        } catch (error) {
+            console.error(`[GrokBaseAdapter] Model fetch error:`, error);
+            throw error;
+        }
+    }
 }
 ===== src/adapters/base/GeminiBaseAdapter.ts =====
 
 import { requestUrl } from 'obsidian';
-import { fetchGeminiModels } from '../../settings/providers/gemini';
 
 export abstract class GeminiBaseAdapter {
     protected apiKey: string;
@@ -3464,7 +3276,7 @@ export abstract class GeminiBaseAdapter {
         const candidateModel = model || defaultModel;
 
         try {
-            const availableModels = await fetchGeminiModels(this.apiKey);
+            const availableModels = await GeminiBaseAdapter.fetchModels(this.apiKey);
             console.log(`[${this.constructor.name}] Available models:`, availableModels);
 
             const normalizedModels = availableModels.map(m => m.replace(/^models\//, ''));
@@ -3489,11 +3301,52 @@ export abstract class GeminiBaseAdapter {
             return finalFallback;
         }
     }
+
+    public static async fetchModels(apiKey: string): Promise<string[]> {
+        try {
+            if (!apiKey) {
+                throw new Error(`[GeminiBaseAdapter] API key is required for fetching models.`);
+            }
+            const apiVersions = ['v1', 'v1beta'];
+            let lastError: Error | null = null;
+
+            for (const apiVersion of apiVersions) {
+                const url = `https://generativelanguage.googleapis.com/${apiVersion}/models?key=${apiKey.trim()}`;
+                console.log(`[GeminiBaseAdapter] Fetching models with URL:`, url);
+
+                try {
+                    const resp = await requestUrl({
+                        url,
+                        method: 'GET',
+                    });
+
+                    if (resp.status !== 200) {
+                        throw new Error(`Failed to fetch Gemini models: ${resp.status} - ${resp.text || 'No details'}`);
+                    }
+
+                    const data = resp.json as { models: { name: string }[] };
+                    const models = data.models
+                        .map(m => m.name.replace(/^models\//, ''))
+                        .filter(m => m.startsWith('gemini')); // Only include Gemini models
+                    console.log(`[GeminiBaseAdapter] Fetched models:`, models);
+                    return models;
+                } catch (error) {
+                    console.error(`[GeminiBaseAdapter] Error for API version ${apiVersion}:`, error);
+                    lastError = error;
+                    continue;
+                }
+            }
+
+            throw lastError || new Error('Failed to fetch models with all API versions');
+        } catch (error) {
+            console.error(`[GeminiBaseAdapter] Model fetch error:`, error);
+            return ['gemini-1.5-pro-latest', 'gemini-1.5-flash-latest']; // Fallback models
+        }
+    }
 }
 ===== src/adapters/base/OpenAIBaseAdapter.ts =====
 
 import { requestUrl } from 'obsidian';
-import { fetchOpenAIModels } from '../../settings/providers/openai';
 
 export abstract class OpenAIBaseAdapter {
     protected apiKey: string;
@@ -3530,13 +3383,13 @@ export abstract class OpenAIBaseAdapter {
                     console.error(`[${this.constructor.name}] Error response body:`, errorBody);
                     errorMessage += `: ${errorBody}`;
                     if (response.status === 401) {
-                        errorMessage += '. Invalid API key. Verify your OpenAI API key in settings at https://platform.openai.com/account/api-keys.';
+                        errorMessage += '. Invalid API key. Verify your OpenAI API key at https://platform.openai.com/account/api-keys.';
                     } else if (response.status === 400) {
                         errorMessage += '. Check request parameters or model validity.';
                     } else if (response.status === 429) {
-                        errorMessage += '. Rate limit exceeded. Try again later or check your OpenAI account at https://platform.openai.com/account/billing.';
+                        errorMessage += '. Rate limit exceeded. Try again later or check your OpenAI quota at https://platform.openai.com/account/usage.';
                     } else if (response.status === 403) {
-                        errorMessage += '. Check your API key permissions or account status at https://platform.openai.com/account/api-keys.';
+                        errorMessage += '. Check your API key permissions or account status at https://platform.openai.com/account.';
                     } else if (response.status >= 500) {
                         errorMessage += '. Server error at OpenAI. Try again later or contact OpenAI support.';
                     }
@@ -3561,7 +3414,7 @@ export abstract class OpenAIBaseAdapter {
         const candidateModel = model || defaultModel;
 
         try {
-            const availableModels = await fetchOpenAIModels(this.apiKey);
+            const availableModels = await OpenAIBaseAdapter.fetchModels(this.apiKey);
             console.log(`[${this.constructor.name}] Available models:`, availableModels);
 
             if (availableModels.includes(candidateModel)) {
@@ -3585,11 +3438,59 @@ export abstract class OpenAIBaseAdapter {
             return finalFallback;
         }
     }
+
+    public static async fetchModels(apiKey: string): Promise<string[]> {
+        try {
+            if (!apiKey) {
+                throw new Error(`[OpenAIBaseAdapter] API key is required for fetching models.`);
+            }
+            const url = 'https://api.openai.com/v1/models';
+            console.log(`[OpenAIBaseAdapter] Sending model fetch request:`, {
+                url,
+                headers: { Authorization: `Bearer ${apiKey.trim()}` }
+            });
+
+            const response = await requestUrl({
+                url,
+                method: 'GET',
+                headers: {
+                    Authorization: `Bearer ${apiKey.trim()}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `openai error: ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.log(`[OpenAIBaseAdapter] Error response body:`, errorBody);
+                    errorMessage += ` - ${errorBody}`;
+                    if (response.status === 401) {
+                        errorMessage += '. Invalid API key. Verify your OpenAI API key at https://platform.openai.com/account/api-keys.';
+                    } else if (response.status === 403) {
+                        errorMessage += '. Check your API key permissions or account status at https://platform.openai.com/account.';
+                    }
+                } catch {
+                    errorMessage += ' - Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+
+            const models = (response.json as { data: { id: string }[] }).data
+                ?.map(m => m.id)
+                .filter(id => id.startsWith('gpt-') || id.startsWith('chatgpt-'))
+                .sort() ?? [];
+            console.log(`[OpenAIBaseAdapter] Fetched models:`, models);
+            return models;
+        } catch (error) {
+            console.error(`[OpenAIBaseAdapter] Model fetch error:`, error);
+            throw error;
+        }
+    }
 }
 ===== src/adapters/base/GroqBaseAdapter.ts =====
 
 import { requestUrl } from 'obsidian';
-import { fetchGroqModels } from '../../settings/providers/groq';
 
 export abstract class GroqBaseAdapter {
     protected apiKey: string;
@@ -3626,13 +3527,13 @@ export abstract class GroqBaseAdapter {
                     console.error(`[${this.constructor.name}] Error response body:`, errorBody);
                     errorMessage += `: ${errorBody}`;
                     if (response.status === 401) {
-                        errorMessage += '. Invalid API key. Please verify your Groq API key in settings.';
+                        errorMessage += '. Invalid API key. Verify your Groq API key at https://console.groq.com/keys.';
                     } else if (response.status === 400) {
                         errorMessage += '. Check request parameters or model validity.';
-                    } else if (response.status === 403) {
-                        errorMessage += '. Check your API key, permissions, or account status at console.groq.com.';
                     } else if (response.status === 429) {
-                        errorMessage += '. Rate limit exceeded. Try again later or check your Groq account.';
+                        errorMessage += '. Rate limit exceeded. Try again later or check your Groq quota at https://console.groq.com.';
+                    } else if (response.status === 403) {
+                        errorMessage += '. Check your API key permissions or account status at https://console.groq.com.';
                     } else if (response.status >= 500) {
                         errorMessage += '. Server error at Groq. Try again later or contact Groq support.';
                     }
@@ -3657,7 +3558,7 @@ export abstract class GroqBaseAdapter {
         const candidateModel = model || defaultModel;
 
         try {
-            const availableModels = await fetchGroqModels(this.apiKey);
+            const availableModels = await GroqBaseAdapter.fetchModels(this.apiKey);
             console.log(`[${this.constructor.name}] Available models:`, availableModels);
 
             if (availableModels.includes(candidateModel)) {
@@ -3679,6 +3580,52 @@ export abstract class GroqBaseAdapter {
             const finalFallback = defaultModel || fallbackModel;
             console.warn(`[${this.constructor.name}] Using fallback model due to error:`, finalFallback);
             return finalFallback;
+        }
+    }
+
+    public static async fetchModels(apiKey: string): Promise<string[]> {
+        try {
+            if (!apiKey) {
+                throw new Error(`[GroqBaseAdapter] API key is required for fetching models.`);
+            }
+            const url = 'https://api.groq.com/openai/v1/models';
+            console.log(`[GroqBaseAdapter] Sending model fetch request:`, {
+                url,
+                headers: { Authorization: `Bearer ${apiKey.trim()}` }
+            });
+
+            const response = await requestUrl({
+                url,
+                method: 'GET',
+                headers: {
+                    Authorization: `Bearer ${apiKey.trim()}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `groq error: ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.log(`[GroqBaseAdapter] Error response body:`, errorBody);
+                    errorMessage += ` - ${errorBody}`;
+                    if (response.status === 401) {
+                        errorMessage += '. Invalid API key. Verify your Groq API key at https://console.groq.com/keys.';
+                    } else if (response.status === 403) {
+                        errorMessage += '. Check your API key permissions or account status at https://console.groq.com.';
+                    }
+                } catch {
+                    errorMessage += ' - Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+
+            const models = (response.json as { data: { id: string }[] }).data?.map(m => m.id).sort() ?? [];
+            console.log(`[GroqBaseAdapter] Fetched models:`, models);
+            return models;
+        } catch (error) {
+            console.error(`[GroqBaseAdapter] Model fetch error:`, error);
+            throw error;
         }
     }
 }
