@@ -268,4 +268,115 @@ export const consoleCSS = `
 .ai-console-controls-spacer {
   flex-grow: 1;
 }
+.ai-console-fixed-section {
+  flex-shrink: 0;
+}
+.ai-console-scrollable-section {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 300px;
+  padding-bottom: 16px;
+}
+.ai-console-image-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+}
+.ai-console-controls-row {
+  display: flex;
+  overflow-x: auto;
+  gap: 16px;
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  white-space: nowrap;
+}
+.ai-console-controls-row::-webkit-scrollbar {
+  height: 8px;
+}
+.ai-console-controls-row::-webkit-scrollbar-thumb {
+  background: #555;
+  border-radius: 4px;
+}
+.ai-console-controls-row::-webkit-scrollbar-track {
+  background: #333;
+}
+.ai-console-run-button-row {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+.ai-console-run-btn {
+  background-color: #7d57c1;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.ai-console-run-btn:hover {
+  background-color: #5c3a9e;
+}
+  .ai-console-history-section {
+  margin-top: 16px;
+}
+.ai-console-history-scrollable {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 8px;
+  background: #2a2a2a;
+}
+.ai-console-history-scrollable::-webkit-scrollbar {
+  width: 8px;
+}
+.ai-console-history-scrollable::-webkit-scrollbar-thumb {
+  background: #555;
+  border-radius: 4px;
+}
+.ai-console-history-scrollable::-webkit-scrollbar-track {
+  background: #333;
+}
+.ai-console-history-entry {
+  display: flex;
+  align-items: center;
+  padding: 8px;
+  margin-bottom: 8px;
+  background: #333;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.ai-console-history-entry:hover {
+  background: #444;
+}
+.ai-console-history-entry-text {
+  flex: 1;
+  overflow: hidden;
+}
+.ai-console-history-entry-text p {
+  margin: 0;
+  font-size: 12px;
+  color: #ccc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ai-console-history-entry-text p.prompt {
+  color: #fff;
+  font-weight: bold;
+  font-size: 14px;
+}
+.ai-console-history-entry img {
+  max-width: 40px;
+  max-height: 40px;
+  margin-left: 8px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+.ai-console-history-empty {
+  text-align: center;
+  color: #ccc;
+  font-size: 12px;
+}
 `;

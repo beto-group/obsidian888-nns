@@ -27,13 +27,16 @@ export class TabComponent {
   private container: HTMLElement | null = null;
   private tabContentContainer: HTMLElement | null = null;
   private styleElement: HTMLStyleElement | null = null;
+  private onTabChange: (tabId: string) => void; // Callback for tab changes
 
   constructor(
     private app: App,
     private tabs: TabConfig[],
-    initialTabId: string
+    initialTabId: string,
+    onTabChange: (tabId: string) => void = () => {} // Default to no-op
   ) {
     this.activeTabId = tabs.some(t => t.tab.id === initialTabId) ? initialTabId : tabs[0]?.tab.id;
+    this.onTabChange = onTabChange; // Store callback
   }
 
   /**
@@ -76,12 +79,13 @@ export class TabComponent {
   }
 
   /**
-Interp   * Switches to the specified tab and re-renders the content.
+   * Switches to the specified tab and re-renders the content.
    */
   private switchTab(tabId: string): void {
     if (tabId === this.activeTabId) return;
     this.activeTabId = tabId;
     this.renderActiveTab();
+    this.onTabChange(tabId); // Notify on tab change
   }
 
   /**

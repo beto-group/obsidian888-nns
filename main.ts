@@ -11,6 +11,7 @@ import { SampleSettingTab } from './src/settings/settings';
 import { DEFAULT_SETTINGS } from './src/settings/defaults';
 import { MyPluginSettings } from './src/settings/types';
 import { SecretsManager } from './src/utils/secrets';
+import { HistoryManager } from './src/utils/historyManager'; // Add HistoryManager import
 import { AiConsoleModal } from './src/ui/console/AiConsoleModal';
 import { registerAiNNS, unregisterAiNNS } from './src/api/aiNNS';
 
@@ -20,6 +21,7 @@ import { registerAiNNS, unregisterAiNNS } from './src/api/aiNNS';
 export default class MyPlugin extends Plugin {
     settings: MyPluginSettings;
     secrets: SecretsManager;
+    historyManager: HistoryManager; // Add historyManager property
 
     /**
      * Plugin entry point
@@ -38,6 +40,10 @@ export default class MyPlugin extends Plugin {
         } catch (error) {
             console.error("[MyPlugin] Error listing secrets on load:", error);
         }
+
+        // Initialize HistoryManager
+        this.historyManager = new HistoryManager(this.app, this.secrets);
+        console.log('[MyPlugin] HistoryManager initialized:', this.historyManager);
 
         // Load plugin settings
         await this.loadSettings();

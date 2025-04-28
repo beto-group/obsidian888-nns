@@ -188,9 +188,6 @@ class SampleModal extends Modal {
     }
 }
 
-===== src/types.ts =====
-
-
 ===== src/ui/components/TabComponent.ts =====
 
 import { App, setIcon } from 'obsidian';
@@ -338,96 +335,81 @@ import { AudioConsoleTab } from './tabs/AudioConsoleTab';
 import { OcrConsoleTab } from './tabs/OcrConsoleTab';
 import { ThreeDConsoleTab } from './tabs/ThreeDConsoleTab';
 import { TabComponent, TabConfig } from '../components/TabComponent';
-
-// Common interface for history entries
-export interface BaseHistoryEntry {
-    provider: string;
-    model: string;
-    prompt: string;
-    timestamp: string;
-}
-
-interface PromptHistoryEntry extends BaseHistoryEntry {
-    output: string;
-}
-
-export interface ImageHistoryEntry extends BaseHistoryEntry {
-    imageUrls: string[];
-}
-
-type HistoryEntry = PromptHistoryEntry | ImageHistoryEntry;
-
-interface ConsoleTab {
-    id: string;
-    name: string;
-    icon: string;
-    render(container: HTMLElement): void;
-    cleanup(): void;
-    renderHistory?(history: HistoryEntry[]): void;
-}
+import { HistoryManager, BaseHistoryEntry, PromptHistoryEntry, ImageHistoryEntry, HistoryType } from '../../utils/historyManager';
 
 export class AiConsoleModal extends Modal {
-    private settings: MyPluginSettings;
-    private secrets: SecretsManager;
-    private tabs: ConsoleTab[] = [];
-    private tabComponent: TabComponent;
-    private history: HistoryEntry[] = [];
-    private maxHistoryEntries = 10;
+  private settings: MyPluginSettings;
+  private secrets: SecretsManager;
+  private tabs: ConsoleTab[] = [];
+  private tabComponent: TabComponent;
+  private historyManager: HistoryManager;
+  private maxHistoryEntries = 10;
 
-    constructor(app: App, settings: MyPluginSettings, secrets: SecretsManager) {
-        super(app);
-        this.settings = settings;
-        this.secrets = secrets;
-        this.initializeTabs();
-        const tabConfigs: TabConfig[] = this.tabs.map(tab => ({
-            tab,
-            icon: tab.icon
-        }));
-        this.tabComponent = new TabComponent(this.app, tabConfigs, 'text');
-    }
+  constructor(app: App, settings: MyPluginSettings, secrets: SecretsManager) {
+    super(app);
+    this.settings = settings;
+    this.secrets = secrets;
+    this.historyManager = new HistoryManager(app, secrets);
+    this.initializeTabs();
+    const tabConfigs: TabConfig[] = this.tabs.map(tab => ({
+      tab,
+      icon: tab.icon,
+    }));
+    this.tabComponent = new TabComponent(this.app, tabConfigs, 'text');
+  }
 
-    private initializeTabs() {
-        this.tabs = [
-            new TextConsoleTab(this.app, this.settings, this.secrets, this.addToHistory.bind(this), this.renderHistory.bind(this)),
-            new ImageConsoleTab(this.app, this.settings, this.secrets, this.addToHistory.bind(this), this.renderHistory.bind(this)),
-            new VideoConsoleTab(this.app, this.settings, this.secrets),
-            new AudioConsoleTab(this.app, this.settings, this.secrets),
-            new OcrConsoleTab(this.app, this.settings, this.secrets),
-            new ThreeDConsoleTab(this.app, this.settings, this.secrets)
-        ];
-    }
+  private initializeTabs() {
+    this.tabs = [
+      new TextConsoleTab(this.app, this.settings, this.secrets, this.addToHistory.bind(this)),
+      new ImageConsoleTab(this.app, this.settings, this.secrets, this.addToHistory.bind(this)),
+      new VideoConsoleTab(this.app, this.settings, this.secrets),
+      new AudioConsoleTab(this.app, this.settings, this.secrets),
+      new OcrConsoleTab(this.app, this.settings, this.secrets),
+      new ThreeDConsoleTab(this.app, this.settings, this.secrets),
+    ];
+  }
 
-    onOpen() {
-        console.log('[AiConsoleModal] Opening modal...');
-        this.titleEl.setText('AI Console Playground');
-        this.contentEl.empty();
-        const container = this.contentEl.createEl('div', { cls: 'ai-console-container' });
-        this.tabComponent.render(container);
-    }
+  onOpen() {
+    console.log('[AiConsoleModal] Opening modal...');
+    this.titleEl.setText('AI Console Playground');
+    this.contentEl.empty();
+    const container = this.contentEl.createEl('div', { cls: 'ai-console-container' });
+    this.tabComponent.render(container);
+    // Lazy-load history for the initial tab
+    this.renderHistory();
+  }
 
-    private addToHistory(entry: HistoryEntry) {
-        this.history.unshift(entry);
-        if (this.history.length > this.maxHistoryEntries) {
-            this.history.pop();
-        }
-        this.renderHistory();
-    }
+  private async addToHistory<T extends BaseHistoryEntry>(entry: T) {
+    const activeTabId = this.tabComponent.getActiveTabId() as HistoryType;
+    await this.historyManager.addEntry<T>(activeTabId, entry, this.maxHistoryEntries);
+    await this.renderHistory();
+  }
 
-    public renderHistory() {
-        const activeTab = this.tabs.find(tab => tab.id === this.tabComponent.getActiveTabId());
-        if (activeTab && activeTab.renderHistory) {
-            activeTab.renderHistory(this.history);
-        }
+  public async renderHistory() {
+    const activeTabId = this.tabComponent.getActiveTabId() as HistoryType;
+    const activeTab = this.tabs.find(tab => tab.id === activeTabId);
+    if (activeTab && 'renderHistory' in activeTab && activeTab.renderHistory) {
+      const history = await this.historyManager.loadHistory<BaseHistoryEntry>(activeTabId);
+      activeTab.renderHistory(history);
     }
+  }
 
-    onClose() {
-        this.tabComponent.cleanup();
-        console.log('[AiConsoleModal] Modal closed.');
-    }
+  onClose() {
+    this.tabComponent.cleanup();
+    console.log('[AiConsoleModal] Modal closed.');
+  }
+}
+
+interface ConsoleTab {
+  id: string;
+  name: string;
+  icon: string;
+  render(container: HTMLElement): void;
+  cleanup(): void;
+  renderHistory?(history: BaseHistoryEntry[]): void;
 }
 ===== src/ui/console/tabs/ImageConsoleTab.ts =====
 
-// src/ui/console/tabs/ImageConsoleTab.ts
 import { App, Notice, Setting } from 'obsidian';
 import type { MyPluginSettings } from '../../../settings/types';
 import type { SecretsManager } from '../../../utils/secrets';
@@ -899,6 +881,7 @@ export class ImageConsoleTab {
 
   renderHistory(history: (ImageHistoryEntry | any)[]) {
     const imageHistory = history.filter((entry): entry is ImageHistoryEntry => 'imageUrls' in entry);
+    this.history = imageHistory; // Update the internal history to match the filtered history
     this.promptHistory.updateHistory(imageHistory, this.historyClickHandler.bind(this));
   }
 }
@@ -951,7 +934,6 @@ export class VideoConsoleTab {
 }
 ===== src/ui/console/tabs/TextConsoleTab.ts =====
 
-// src/ui/console/tabs/TextConsoleTab.ts
 import { App, Notice, Setting, SliderComponent, TextComponent } from 'obsidian';
 import type { MyPluginSettings } from '../../../settings/types';
 import type { SecretsManager } from '../../../utils/secrets';
@@ -962,14 +944,7 @@ import { ParameterControls } from '../sections/ParameterControls';
 import { PromptInput } from '../sections/PromptInput';
 import { OutputViewer } from '../sections/OutputViewer';
 import { PromptHistory } from '../sections/PromptHistory';
-
-interface PromptHistoryEntry {
-  provider: string;
-  model: string;
-  prompt: string;
-  output: string;
-  timestamp: string;
-}
+import { PromptHistoryEntry } from '../../../utils/historyManager';
 
 export class TextConsoleTab {
   id = 'text';
@@ -986,8 +961,7 @@ export class TextConsoleTab {
     private app: App,
     private settings: MyPluginSettings,
     private secrets: SecretsManager,
-    private addToHistory: (entry: PromptHistoryEntry) => void,
-    renderHistory: () => void
+    private addToHistory: (entry: PromptHistoryEntry) => void
   ) {
     this.providerSelector = new ProviderSelector(app, settings, secrets);
     this.parameterControls = new ParameterControls();
@@ -1007,12 +981,33 @@ export class TextConsoleTab {
       container.createEl('p', { text: 'Error initializing Text Console.' });
     }
 
+    container.style.display = 'flex';
+    container.style.flexDirection = 'column';
+
+    const fixedSection = container.createEl('div', { cls: 'ai-console-fixed-section' });
+    
     // Render sections
-    this.providerSelector.render(container, this.textGateway);
-    this.parameterControls.render(container);
-    this.promptInput.render(container, this.runPrompt.bind(this));
-    this.outputViewer.render(container);
-    this.promptHistory.render(container, this.historyClickHandler.bind(this));
+    this.providerSelector.render(fixedSection, this.textGateway);
+    this.parameterControls.render(fixedSection);
+    this.promptInput.render(fixedSection, this.runPrompt.bind(this));
+    
+    const scrollableSection = container.createEl('div', { cls: 'ai-console-scrollable-section' });
+    this.outputViewer.render(scrollableSection);
+    this.promptHistory.render(scrollableSection, this.historyClickHandler.bind(this));
+
+    // Add styles
+    const styleEl = container.createEl('style');
+    styleEl.textContent = `
+      .ai-console-fixed-section {
+        flex-shrink: 0;
+      }
+      .ai-console-scrollable-section {
+        flex: 1;
+        overflow-y: auto;
+        max-height: 400px;
+        padding-bottom: 16px;
+      }
+    `;
   }
 
   private async runPrompt() {
@@ -1071,7 +1066,8 @@ export class TextConsoleTab {
 
       this.outputViewer.setOutput(output);
       this.outputViewer.setCode(`await window.aiNNS.text.generate("${prompt.replace(/"/g, '\\"')}", { model: "${model}", temperature: ${temperature}, maxTokens: ${maxTokens} });`);
-      this.addToHistory({ provider, model, prompt, output, timestamp: new Date().toLocaleString() });
+      const historyEntry: PromptHistoryEntry = { provider, model, prompt, output, timestamp: new Date().toLocaleString() };
+      this.addToHistory(historyEntry);
       console.log('[TextConsoleTab] Response received for', provider, ':', {
         output: output.length > 50 ? output.slice(0, 50) + '...' : output,
         tokensUsed,
@@ -1432,62 +1428,96 @@ export class OutputViewer {
 ===== src/ui/console/sections/PromptHistory.ts =====
 
 import type { App } from 'obsidian';
-import type { BaseHistoryEntry, ImageHistoryEntry } from '../AiConsoleModal';
+import { BaseHistoryEntry, ImageHistoryEntry } from '../../../utils/historyManager';
 
 // Type guard to check if entry is ImageHistoryEntry
 function isImageHistoryEntry(entry: BaseHistoryEntry): entry is ImageHistoryEntry {
-    return 'imageUrls' in entry;
+  return 'imageUrls' in entry;
 }
 
 export class PromptHistory {
-    private container?: HTMLElement;
+  private container?: HTMLElement;
+  private historyContainer?: HTMLElement;
 
-    constructor() {}
+  constructor() {}
 
-    render(container: HTMLElement, onClick: (entry: BaseHistoryEntry) => void) {
-        this.container = container.createEl('div', { cls: 'ai-console-history-section' });
-        this.container.createEl('h4', { text: 'History' });
-        this.updateHistory([], onClick);
+  render<T extends BaseHistoryEntry>(container: HTMLElement, onClick: (entry: T) => void) {
+    this.container = container.createEl('div', { cls: 'ai-console-history-section' });
+    this.container.createEl('h4', { text: 'Prompt History' });
+    this.historyContainer = this.container.createEl('div', { cls: 'ai-console-history-scrollable' });
+    this.updateHistory([], onClick);
+  }
+
+  updateHistory<T extends BaseHistoryEntry>(history: T[], onClick: (entry: T) => void) {
+    if (!this.container || !this.historyContainer) {
+      console.warn('[PromptHistory] Cannot update history: container or historyContainer is undefined');
+      return;
     }
 
-    updateHistory<T extends BaseHistoryEntry>(history: T[], onClick: (entry: T) => void) {
-        if (!this.container) return;
+    this.historyContainer.empty();
 
-        const historyContainer = this.container.querySelector('.ai-console-history') || this.container.createEl('div', { cls: 'ai-console-history' });
-        historyContainer.empty();
+    if (history.length === 0) {
+      this.historyContainer.createEl('p', { 
+        text: 'No history yet.', 
+        cls: 'ai-console-history-empty' 
+      });
+      return;
+    }
 
-        if (history.length === 0) {
-            historyContainer.createEl('p', { text: 'No history yet.' });
-            return;
-        }
+    history.forEach((entry, index) => {
+      const entryEl = this.historyContainer!.createEl('div', { cls: 'ai-console-history-entry' });
+      
+      // Text content
+      const textEl = entryEl.createEl('div', { cls: 'ai-console-history-entry-text' });
+      
+      // Create a single line with spans for better control over spacing
+      const infoLine = textEl.createEl('div', { cls: 'ai-console-history-info' });
+      
+      // Prompt
+      infoLine.createEl('span', { 
+        text: `Prompt: ${entry.prompt.slice(0, 50)}${entry.prompt.length > 50 ? '...' : ''} | `,
+        cls: 'ai-console-history-prompt'
+      });
+      
+      // Provider
+      infoLine.createEl('span', { 
+        text: `Provider: ${entry.provider} | `,
+        cls: 'ai-console-history-provider'
+      });
+      
+      // Model
+      infoLine.createEl('span', { 
+        text: `Model: ${entry.model} | `,
+        cls: 'ai-console-history-model'
+      });
+      
+      // Timestamp
+      infoLine.createEl('span', { 
+        text: `Time: ${entry.timestamp}`,
+        cls: 'ai-console-history-timestamp'
+      });
 
-        history.forEach((entry, index) => {
-            const entryEl = historyContainer.createEl('div', { cls: 'ai-console-history-entry' });
-            entryEl.createEl('p', { text: `Prompt: ${entry.prompt.slice(0, 50)}${entry.prompt.length > 50 ? '...' : ''}` });
-            entryEl.createEl('p', { text: `Provider: ${entry.provider}` });
-            entryEl.createEl('p', { text: `Model: ${entry.model}` });
-            entryEl.createEl('p', { text: `Time: ${entry.timestamp}` });
-
-            // Display image thumbnail for image entries
-            if (isImageHistoryEntry(entry) && entry.imageUrls?.length > 0) {
-                entryEl.createEl('img', {
-                    attr: { 
-                        src: entry.imageUrls[0], 
-                        style: 'max-width: 50px; max-height: 50px; margin-top: 5px;'
-                    }
-                });
-            }
-
-            entryEl.addEventListener('click', () => onClick(entry));
+      // Image thumbnail for image entries
+      if (isImageHistoryEntry(entry) && entry.imageUrls?.length > 0) {
+        entryEl.createEl('img', {
+          attr: {
+            src: entry.imageUrls[0],
+            alt: 'History thumbnail',
+          },
         });
-    }
+      }
 
-    cleanup() {
-        if (this.container) {
-            this.container.empty();
-            this.container = undefined;
-        }
+      entryEl.addEventListener('click', () => onClick(entry));
+    });
+  }
+
+  cleanup() {
+    if (this.container) {
+      this.container.empty();
+      this.container = undefined;
+      this.historyContainer = undefined;
     }
+  }
 }
 ===== src/ui/console/sections/PromptInput.ts =====
 
@@ -1540,34 +1570,33 @@ export const consoleCSS = `
   background: #2F2F2F;
   padding: 0;
   border-bottom: 1px solid var(--background-modifier-border);
-  flex-wrap: nowrap; /* Prevent wrapping to ensure all tabs are visible */
-  overflow-x: auto; /* Allow horizontal scrolling if tabs overflow */
-  -webkit-overflow-scrolling: touch; /* Smooth scrolling on touch devices */
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
-/* Custom Scrollbar Styling */
 .ai-console-tab-selector::-webkit-scrollbar {
-  height: 4px; /* Slimmer scrollbar */
+  height: 4px;
 }
 
 .ai-console-tab-selector::-webkit-scrollbar-track {
-  background: #2F2F2F; /* Match the background of the tab selector */
+  background: #2F2F2F;
 }
 
 .ai-console-tab-selector::-webkit-scrollbar-thumb {
-  background: var(--background-modifier-border); /* Subtle thumb color */
+  background: var(--background-modifier-border);
   border-radius: 2px;
 }
 
 .ai-console-tab-selector::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted); /* Slightly lighter on hover */
+  background: var(--text-muted);
 }
 
 .ai-console-tab-button {
   display: flex;
   align-items: center;
-  gap: 8px; /* Gap between icon and label */
-  padding: 8px 14px; /* Increased padding for better spacing */
+  gap: 8px;
+  padding: 8px 14px;
   border: none;
   border-right: 1px solid var(--background-modifier-border);
   background: #2F2F2F;
@@ -1580,9 +1609,9 @@ export const consoleCSS = `
   text-align: center;
   justify-content: center;
   opacity: 0.4;
-  min-width: 70px; /* Slightly increased min-width for better spacing */
-  white-space: nowrap; /* Prevent text wrapping */
-  flex-shrink: 0; /* Prevent the button from shrinking too much */
+  min-width: 70px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .ai-console-tab-button:last-child {
@@ -1612,7 +1641,7 @@ export const consoleCSS = `
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0; /* Prevent icon from shrinking */
+  flex-shrink: 0;
 }
 
 .ai-console-tab-icon svg {
@@ -1623,7 +1652,7 @@ export const consoleCSS = `
 
 .ai-console-tab-label {
   display: inline-block;
-  flex-shrink: 0; /* Prevent label from shrinking */
+  flex-shrink: 0;
 }
 
 .ai-console-tab-content {
@@ -1733,7 +1762,7 @@ export const consoleCSS = `
   border: 1px solid var(--background-modifier-border);
 }
 
-.ai-console-history {
+.ai-console-history-section {
   margin-top: 20px;
   padding: 15px;
   background: var(--background-secondary);
@@ -1741,47 +1770,69 @@ export const consoleCSS = `
   border: 1px solid var(--background-modifier-border);
 }
 
-.ai-console-history h4 {
+.ai-console-history-section h4 {
   margin: 0 0 10px 0;
   font-size: 16px;
   color: var(--text-normal);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 5px;
 }
 
-.ai-console-history-list {
-  list-style: none;
-  padding: 0;
+.ai-console-history-scrollable {
   max-height: 200px;
   overflow-y: auto;
 }
 
-.ai-console-history-list li {
-  padding: 10px;
+.ai-console-history-entry {
+  display: flex;
+  align-items: center;
+  padding: 8px;
   border-bottom: 1px solid var(--background-modifier-border);
   cursor: pointer;
-  font-size: 14px;
-  color: var(--text-normal);
   transition: background 0.2s ease;
 }
 
-.ai-console-history-list li:hover {
+.ai-console-history-entry:hover {
   background: var(--background-modifier-hover);
 }
 
-.ai-console-history-list li:last-child {
+.ai-console-history-entry:last-child {
   border-bottom: none;
 }
 
-.ai-console-history-list strong {
+.ai-console-history-entry-text {
+  flex: 1;
+}
+
+.ai-console-history-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-normal);
+}
+
+.ai-console-history-prompt {
+  font-weight: 500;
   color: var(--text-accent);
 }
 
-.ai-console-history-list span {
+.ai-console-history-provider,
+.ai-console-history-model,
+.ai-console-history-timestamp {
   color: var(--text-muted);
 }
+
+.ai-console-history-entry img {
+  width: 40px;
+  height: 40px;
+  margin-left: 10px;
+  border-radius: 4px;
+}
+
+.ai-console-history-empty {
+  font-style: italic;
+  color: var(--text-muted);
+}
+
 .ai-console-controls-row {
   display: flex;
   align-items: center;
@@ -1792,6 +1843,17 @@ export const consoleCSS = `
 
 .ai-console-controls-spacer {
   flex-grow: 1;
+}
+
+.ai-console-fixed-section {
+  flex-shrink: 0;
+}
+
+.ai-console-scrollable-section {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 300px;
+  padding-bottom: 16px;
 }
 `;
 ===== src/settings/validation.ts =====
@@ -2088,6 +2150,217 @@ export interface CategorySettings {
 export interface MyPluginSettings {
     categories: Record<Category, CategorySettings>;
     providers: Record<string, ProviderConfig>;
+}
+===== src/settings/providers/stabilityai.ts =====
+
+import { requestUrl } from 'obsidian';
+
+interface StabilityAIEngine {
+    id: string;
+    name: string;
+    description: string;
+    type: string;
+}
+
+interface ModelInfo {
+    id: string;
+    languages: string[];
+}
+
+interface CategorizedModels {
+    Media: ModelInfo[];
+    Language: ModelInfo[];
+    '3D': ModelInfo[];
+    Audio: ModelInfo[];
+}
+
+// Fallback list of models with categories and languages, based on the provided table
+const fallbackModels: CategorizedModels = {
+    Media: [
+        { id: 'stable-diffusion-3-5-medium', languages: ['English'] },
+        { id: 'stable-diffusion-3-5-large', languages: ['English'] },
+        { id: 'stable-diffusion-3-5-large-turbo', languages: ['English'] },
+        { id: 'stable-diffusion-3-medium', languages: ['English'] },
+        { id: 'stable-diffusion-xl-turbo', languages: ['English'] },
+        { id: 'stable-diffusion-turbo', languages: ['English'] },
+        { id: 'stable-video-diffusion-14-frame', languages: ['English'] },
+        { id: 'stable-video-diffusion-25-frame', languages: ['English'] },
+        { id: 'stable-video-diffusion-1-1', languages: ['English'] },
+        { id: 'japanese-sdxl', languages: ['Japanese'] },
+        { id: 'japanese-stable-clip', languages: ['Japanese'] },
+        // Include V1 models seen in previous API response
+        { id: 'stable-diffusion-v1-6', languages: ['English'] },
+        { id: 'stable-diffusion-xl-1024-v1-0', languages: ['English'] }
+    ],
+    Language: [
+        { id: 'stable-lm-2-12b', languages: ['English', 'Spanish', 'German', 'Italian', 'French', 'Portuguese', 'Dutch'] },
+        { id: 'stable-lm-2-1-6b', languages: ['English', 'Spanish', 'German', 'Italian', 'French', 'Portuguese', 'Dutch'] },
+        { id: 'stable-lm-zephyr-3b', languages: ['English'] },
+        { id: 'japanese-stable-lm-2-1-6b', languages: ['Japanese'] },
+        { id: 'japanese-stable-vlm', languages: ['Japanese'] },
+        { id: 'stable-code-instruct-3b', languages: ['English', 'Code'] },
+        { id: 'stable-code-3b', languages: ['English', 'Code'] }
+    ],
+    '3D': [
+        { id: 'stable-point-aware-3d', languages: ['English'] },
+        { id: 'stable-fast-3d', languages: ['English'] },
+        { id: 'stable-zero123c', languages: ['English'] },
+        { id: 'stable-video-3d', languages: ['English'] }
+    ],
+    Audio: [
+        { id: 'stable-audio-open-1-0', languages: ['English'] }
+    ]
+};
+
+// Function to map API engine types to plugin categories
+function mapEngineTypeToCategory(engineType: string, engineId: string): keyof CategorizedModels {
+    // Map based on engine type and ID patterns
+    if (engineType === 'PICTURE' || engineType === 'VIDEO' || engineId.includes('video-diffusion') || engineId.includes('sdxl') || engineId.includes('stable-diffusion')) {
+        return 'Media';
+    } else if (engineType === 'AUDIO' || engineId.includes('audio')) {
+        return 'Audio';
+    } else if (engineType === '3D' || engineId.includes('3d')) {
+        return '3D';
+    } else if (engineType === 'TEXT' || engineId.includes('lm') || engineId.includes('code')) {
+        return 'Language';
+    }
+    // Default to Media for unknown types, as most Stability AI models are image-related
+    return 'Media';
+}
+
+// Helper to merge fetched models with fallback models, avoiding duplicates
+function mergeModels(fetched: CategorizedModels, fallback: CategorizedModels): CategorizedModels {
+    const result: CategorizedModels = { Media: [], Language: [], '3D': [], Audio: [] };
+    const categories: (keyof CategorizedModels)[] = ['Media', 'Language', '3D', 'Audio'];
+
+    for (const category of categories) {
+        const fetchedIds = new Set(fetched[category].map(model => model.id));
+        const merged = [...fetched[category]];
+
+        // Add fallback models that weren't fetched
+        for (const fallbackModel of fallback[category]) {
+            if (!fetchedIds.has(fallbackModel.id)) {
+                merged.push(fallbackModel);
+            }
+        }
+
+        // Sort models by ID for consistency
+        result[category] = merged.sort((a, b) => a.id.localeCompare(b.id));
+    }
+
+    return result;
+}
+
+export async function fetchStabilityAIModels(apiKey: string): Promise<string[]> {
+    const categorizedModels: CategorizedModels = {
+        Media: [],
+        Language: [],
+        '3D': [],
+        Audio: []
+    };
+    let lastError: Error | null = null;
+
+    // Try multiple API versions to fetch models
+    const apiVersions = ['v1', 'v1beta'];
+    for (const apiVersion of apiVersions) {
+        const url = `https://api.stability.ai/${apiVersion}/engines/list`;
+        console.log('[StabilityAI] Sending request:', {
+            url,
+            headers: {
+                Authorization: '[REDACTED]',
+                'Stability-Client-ID': 'obsidian-ai-plugin',
+                'Stability-Client-Version': '1.0.0'
+            }
+        });
+
+        try {
+            const response = await requestUrl({
+                url,
+                method: 'GET',
+                headers: {
+                    Authorization: `Bearer ${apiKey.trim()}`,
+                    'Content-Type': 'application/json',
+                    'Stability-Client-ID': 'obsidian-ai-plugin',
+                    'Stability-Client-Version': '1.0.0'
+                    // Uncomment and set the Organization header if needed
+                    // 'Organization': 'org-123456'
+                }
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `Stability AI error (${apiVersion}): ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.log('[StabilityAI] Error response body:', errorBody);
+                    errorMessage += ` - ${errorBody}`;
+                    if (response.status === 401) {
+                        errorMessage += '. Invalid API key.';
+                    } else if (response.status === 500) {
+                        errorMessage += '. Server error occurred.';
+                    }
+                } catch {
+                    errorMessage += ' - Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+
+            const data = response.json as StabilityAIEngine[];
+            if (!Array.isArray(data)) {
+                console.error('[StabilityAI] Unexpected response format:', data);
+                throw new Error('Unexpected API response format');
+            }
+
+            // Categorize fetched models
+            for (const engine of data) {
+                const category = mapEngineTypeToCategory(engine.type, engine.id);
+                // Assume English as the default language unless specified in fallback
+                const modelInfo: ModelInfo = { id: engine.id, languages: ['English'] };
+                // Update languages if the model is in the fallback list
+                for (const cat of Object.keys(fallbackModels) as (keyof CategorizedModels)[]) {
+                    const fallbackModel = fallbackModels[cat].find(m => m.id === engine.id);
+                    if (fallbackModel) {
+                        modelInfo.languages = fallbackModel.languages;
+                        break;
+                    }
+                }
+                categorizedModels[category].push(modelInfo);
+            }
+
+            console.log(`[StabilityAI] Fetched models from ${apiVersion}:`, categorizedModels);
+        } catch (err) {
+            console.error(`[StabilityAI] Error for API version ${apiVersion}:`, err);
+            lastError = err;
+            continue;
+        }
+    }
+
+    // Merge with fallback models to ensure all models from the table are included
+    const finalModels = mergeModels(categorizedModels, fallbackModels);
+
+    // Log the final categorized models
+    console.log('[StabilityAI] Final categorized model list:', finalModels);
+
+    // For compatibility with the current plugin, return a flat list of all model IDs
+    // The settings redesign can use the categorized structure directly
+    const flatModelList = [
+        ...finalModels.Media,
+        ...finalModels.Language,
+        ...finalModels['3D'],
+        ...finalModels.Audio
+    ].map(model => model.id).sort();
+
+    if (flatModelList.length === 0) {
+        throw lastError || new Error('Failed to fetch models with all API versions and no fallback available');
+    }
+
+    return flatModelList;
+}
+
+// Export the categorized models for use in the settings redesign
+export function getCategorizedStabilityAIModels(): CategorizedModels {
+    // This assumes fetchStabilityAIModels has been called and cached the results
+    // For now, return the fallback models; in a real implementation, you'd cache the fetched results
+    return fallbackModels;
 }
 ===== src/settings/providers/local.ts =====
 
@@ -2748,28 +3021,162 @@ export class SecretsManager {
     }
 }
 
+===== src/utils/historyManager.ts =====
+
+import type { App } from 'obsidian';
+import type { SecretsManager } from './secrets';
+import { Notice } from 'obsidian';
+
+// Generic type for history entries
+export interface BaseHistoryEntry {
+  provider: string;
+  model: string;
+  prompt: string;
+  timestamp: string;
+}
+
+// Specific history entry types
+export interface PromptHistoryEntry extends BaseHistoryEntry {
+  output: string;
+}
+
+export interface ImageHistoryEntry extends BaseHistoryEntry {
+  imageUrls: string[];
+  size?: string;
+  quality?: string;
+  output_format?: string;
+}
+
+// Add more history entry types as needed (e.g., VideoHistoryEntry, AudioHistoryEntry)
+export type HistoryEntry = PromptHistoryEntry | ImageHistoryEntry;
+
+// Supported history types
+export type HistoryType = 'text' | 'image' | 'video' | 'audio' | 'ocr' | '3d';
+
+export class HistoryManager {
+  private app: App;
+  private secrets: SecretsManager;
+  private basePath = '.obsidian/plugins/obsidian888-nns/history'; // Store history in plugin folder
+  private maxEntriesDefault = 10;
+
+  constructor(app: App, secrets: SecretsManager) {
+    this.app = app;
+    this.secrets = secrets;
+  }
+
+  /**
+   * Ensures the history directory exists, creating it if necessary.
+   */
+  private async ensureHistoryDirectory(): Promise<void> {
+    try {
+      const exists = await this.app.vault.adapter.exists(this.basePath);
+      if (!exists) {
+        await this.app.vault.adapter.mkdir(this.basePath);
+        console.log(`[HistoryManager] Created history directory: ${this.basePath}`);
+      }
+    } catch (error) {
+      console.error(`[HistoryManager] Error creating history directory:`, error);
+      throw new Error('Failed to create history directory.');
+    }
+  }
+
+  /**
+   * Loads history entries for the specified type from persistent storage.
+   */
+  async loadHistory<T extends BaseHistoryEntry>(type: HistoryType): Promise<T[]> {
+    console.log(`[HistoryManager] Loading history for type: ${type}`);
+    const filePath = `${this.basePath}/${type}-history.json`;
+    try {
+      const exists = await this.app.vault.adapter.exists(filePath);
+      if (!exists) {
+        console.log(`[HistoryManager] No history file found for ${type}, returning empty array`);
+        return [];
+      }
+      const data = await this.app.vault.adapter.read(filePath);
+      const entries: T[] = JSON.parse(data) || [];
+      console.log(`[HistoryManager] Loaded ${entries.length} entries for ${type}`);
+      return entries;
+    } catch (error) {
+      console.error(`[HistoryManager] Error loading history for ${type}:`, error);
+      new Notice(`Failed to load ${type} history.`);
+      return [];
+    }
+  }
+
+  /**
+   * Saves history entries for the specified type to persistent storage.
+   */
+  async saveHistory<T extends BaseHistoryEntry>(type: HistoryType, entries: T[]): Promise<void> {
+    console.log(`[HistoryManager] Saving ${entries.length} entries for type: ${type}`);
+    const filePath = `${this.basePath}/${type}-history.json`;
+    try {
+      await this.ensureHistoryDirectory();
+      await this.app.vault.adapter.write(filePath, JSON.stringify(entries, null, 2));
+      console.log(`[HistoryManager] History saved for ${type}`);
+    } catch (error) {
+      console.error(`[HistoryManager] Error saving history for ${type}:`, error);
+      new Notice(`Failed to save ${type} history.`);
+    }
+  }
+
+  /**
+   * Clears all history entries for the specified type.
+   */
+  async clearHistory(type: HistoryType): Promise<void> {
+    console.log(`[HistoryManager] Clearing history for type: ${type}`);
+    const filePath = `${this.basePath}/${type}-history.json`;
+    try {
+      const exists = await this.app.vault.adapter.exists(filePath);
+      if (exists) {
+        await this.app.vault.adapter.remove(filePath);
+        console.log(`[HistoryManager] History cleared for ${type}`);
+      }
+    } catch (error) {
+      console.error(`[HistoryManager] Error clearing history for ${type}:`, error);
+      new Notice(`Failed to clear ${type} history.`);
+    }
+  }
+
+  /**
+   * Adds a new entry to the history for the specified type, respecting maxEntries.
+   */
+  async addEntry<T extends BaseHistoryEntry>(
+    type: HistoryType,
+    entry: T,
+    maxEntries: number = this.maxEntriesDefault
+  ): Promise<void> {
+    console.log(`[HistoryManager] Adding entry to ${type} history`);
+    try {
+      const history = await this.loadHistory<T>(type);
+      history.unshift(entry);
+      if (history.length > maxEntries) {
+        history.splice(maxEntries);
+      }
+      await this.saveHistory(type, history);
+      console.log(`[HistoryManager] Entry added to ${type} history, total: ${history.length}`);
+    } catch (error) {
+      console.error(`[HistoryManager] Error adding entry to ${type} history:`, error);
+      new Notice(`Failed to add entry to ${type} history.`);
+    }
+  }
+}
 ===== src/adapters/image/OpenAIImageAdapter.ts =====
 
-import { requestUrl } from 'obsidian';
 import type { ImageRequest, ImageResponse } from '../../core/Adapter';
+import { OpenAIBaseAdapter } from '../base/OpenAIBaseAdapter';
 
-export class OpenAIImageAdapter {
-  private apiKey: string;
+export class OpenAIImageAdapter extends OpenAIBaseAdapter {
   private defaultModel: string;
 
   constructor(apiKey: string, model: string = 'dall-e-3') {
-    if (!apiKey) {
-      throw new Error('[OpenAIImageAdapter] API key is required.');
-    }
-    this.apiKey = apiKey.trim();
+    super(apiKey);
     this.defaultModel = model;
-    console.log(`[OpenAIImageAdapter] Initialized with model: ${model}`);
+    console.log('[OpenAIImageAdapter] Initialized with model:', model);
   }
 
   async generate(request: ImageRequest): Promise<ImageResponse> {
     const model = request.model || this.defaultModel;
 
-    // Supported models and their constraints
     const supportedModels = ['dall-e-3', 'dall-e-2', 'gpt-image-1'];
     const supportedSizes: Record<string, string[]> = {
       'dall-e-3': ['1024x1024', '1792x1024', '1024x1792'],
@@ -2782,118 +3189,70 @@ export class OpenAIImageAdapter {
       'gpt-image-1': 10,
     };
     const supportedQualities: Record<string, ("standard" | "hd" | "low" | "medium" | "high" | "auto")[]> = {
-        'dall-e-3': ['standard', 'hd'],
-        'dall-e-2': [], // No quality options
-        'gpt-image-1': ['low', 'medium', 'high', 'auto'],
-      };      
-    const supportedOutputFormats: string[] = ['png', 'jpeg', 'webp'];
+      'dall-e-3': ['standard', 'hd'],
+      'dall-e-2': [],
+      'gpt-image-1': ['low', 'medium', 'high', 'auto'],
+    };
+    const supportedOutputFormats = ['png', 'jpeg', 'webp'];
 
-    // Validate model
     if (!supportedModels.includes(model)) {
-      throw new Error(`[OpenAIImageAdapter] Unsupported model: ${model}. Supported models: ${supportedModels.join(', ')}`);
+      throw new Error(`[OpenAIImageAdapter] Unsupported model: ${model}`);
     }
 
-    // Validate and set size
     const size = request.size && supportedSizes[model]?.includes(request.size)
       ? request.size
-      : supportedSizes[model][0] || '1024x1024';
+      : supportedSizes[model][0];
 
-    // Validate and set n
-    const n = Math.min(request.n || 1, maxN[model] || 1);
-    if (request.n && request.n > maxN[model]) {
-      console.warn(`[OpenAIImageAdapter] Requested n=${request.n} exceeds max for ${model} (${maxN[model]}). Using n=${n}.`);
-    }
-
-    // Validate and set quality
+    const n = Math.min(request.n || 1, maxN[model]);
     let quality = request.quality || (model === 'dall-e-3' ? 'standard' : 'auto');
     if (supportedQualities[model].length > 0 && !supportedQualities[model].includes(quality)) {
-      console.warn(`[OpenAIImageAdapter] Quality ${quality} not supported for model ${model}. Using default: ${supportedQualities[model][0]}.`);
       quality = supportedQualities[model][0];
     }
 
-    // Validate output_format for gpt-image-1
     let output_format = request.output_format || 'png';
     if (model === 'gpt-image-1' && !supportedOutputFormats.includes(output_format)) {
-      console.warn(`[OpenAIImageAdapter] Output format ${output_format} not supported for gpt-image-1. Using 'png'.`);
       output_format = 'png';
     }
 
-    // Build request body
     const body: any = {
       prompt: request.prompt,
-      model: model,
-      n: n,
-      size: size,
+      model,
+      n,
+      size,
     };
 
     if (model === 'gpt-image-1') {
       body.output_format = output_format;
       if (quality !== 'auto') {
-        body.quality = quality; // low, medium, high
+        body.quality = quality;
       }
-      // Add optional gpt-image-1 fields if provided
       if (request.background) body.background = request.background;
       if (request.moderation !== undefined) body.moderation = request.moderation;
       if (request.output_compression) body.output_compression = request.output_compression;
     } else {
       body.response_format = request.response_format || 'b64_json';
       if (model === 'dall-e-3' && quality) {
-        body.quality = quality; // standard or hd
+        body.quality = quality;
       }
     }
 
-    // Add user if provided
-    if (request.user) body.user = request.user;
+    if (request.user) {
+      body.user = request.user;
+    }
 
-    console.log('[OpenAIImageAdapter] Sending request:', body);
+    console.log('[OpenAIImageAdapter] Sending request body:', body);
 
     try {
-      const response = await requestUrl({
-        url: 'https://api.openai.com/v1/images/generations',
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      });
+      const data = await this.makeRequest('images/generations', body, 'POST');
 
-      if (response.status >= 400) {
-        let errorMessage = `OpenAI error ${response.status}`;
-        try {
-          const errorBody = response.json?.error || response.text || 'No additional details';
-          console.error('[OpenAIImageAdapter] Detailed error response:', errorBody);
-          errorMessage += `: ${errorBody.message || errorBody}`;
-          if (response.status === 400 && model === 'gpt-image-1' && body.response_format) {
-            errorMessage += '. gpt-image-1 does not support response_format. Use output_format (png, jpeg, webp).';
-          } else if (response.status === 401) {
-            errorMessage += '. Invalid API key. Verify at https://platform.openai.com/account/api-keys.';
-          } else if (response.status === 400) {
-            errorMessage += '. Check request parameters (e.g., size, quality, or model validity).';
-          } else if (response.status === 429) {
-            errorMessage += '. Rate limit exceeded. Check quota at https://platform.openai.com/account/usage.';
-          } else if (response.status === 403) {
-            errorMessage += '. Check API key permissions at https://platform.openai.com/account.';
-          } else if (response.status >= 500) {
-            errorMessage += '. Server error at OpenAI. Try again later.';
-          }
-        } catch (parseError) {
-          errorMessage += ': Failed to parse error details';
-        }
-        throw new Error(errorMessage);
-      }
-
-      if (!response.json || !response.json.data) {
+      if (!data.data || !Array.isArray(data.data)) {
         throw new Error('[OpenAIImageAdapter] Invalid response format from OpenAI API');
       }
 
-      const imageUrls = response.json.data.map((item: { url?: string; b64_json?: string }) => {
-        if (item.b64_json) {
-          return item.b64_json; // Return raw base64
-        } else if (item.url) {
-          return item.url;
-        }
-        throw new Error('[OpenAIImageAdapter] No valid image data in response');
+      const imageUrls = data.data.map((item: { url?: string; b64_json?: string }) => {
+        if (item.b64_json) return item.b64_json;
+        if (item.url) return item.url;
+        throw new Error('[OpenAIImageAdapter] Missing image data in response');
       });
 
       return { imageUrls };
@@ -2903,6 +3262,7 @@ export class OpenAIImageAdapter {
     }
   }
 }
+
 ===== src/adapters/text/GeminiTextAdapter.ts =====
 
 import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
