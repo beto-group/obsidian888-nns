@@ -26,13 +26,13 @@ export class ImageConsoleTab {
   private providerModels: Record<string, string[]> = {
     openai: ['dall-e-3', 'dall-e-2', 'gpt-image-1'],
     stabilityai: ['stable-diffusion'],
-    grok: ['grok-image'],
+    grok: ['grok-2-image-1212'], // Updated to match xAI API model
   };
 
   private defaultModels: Record<string, string> = {
     openai: 'gpt-image-1',
     stabilityai: 'stable-diffusion',
-    grok: 'grok-image',
+    grok: 'grok-2-image-1212', // Updated to match xAI API model
   };
 
   constructor(
@@ -76,7 +76,7 @@ export class ImageConsoleTab {
 
     const updateUI = () => {
       const provider = this.providerSelector.getSelectedProvider();
-      const model = this.providerSelector.getSelectedModel() || this.defaultModels[provider] || 'dall-e-3';
+      const model = this.providerSelector.getSelectedModel() || this.defaultModels[provider] || 'gpt-image-1';
       console.log('[ImageConsoleTab] updateUI called - Provider:', provider, 'Model:', model);
       this.imageControls.updateControls(model);
     };
@@ -110,7 +110,7 @@ export class ImageConsoleTab {
     console.log('[ImageConsoleTab] Run button clicked.');
 
     const provider = this.providerSelector.getSelectedProvider();
-    const model = this.providerSelector.getSelectedModel() || this.defaultModels[provider] || 'dall-e-3';
+    const model = this.providerSelector.getSelectedModel() || this.defaultModels[provider] || 'gpt-image-1';
     const prompt = this.promptInput.getPrompt().trim();
     const size = this.imageControls.getSize();
     const n = this.imageControls.getN();
@@ -146,16 +146,27 @@ export class ImageConsoleTab {
       n,
     };
 
-    if (model === 'gpt-image-1') {
+    // Provider-specific request configuration
+    if (provider === 'openai') {
+      if (model === 'gpt-image-1') {
+        request.output_format = outputFormat;
+        if (quality && quality !== 'auto') {
+          request.quality = quality;
+        }
+      } else {
+        request.response_format = 'b64_json';
+        if (model === 'dall-e-3' && quality) {
+          request.quality = quality;
+        }
+      }
+    } else if (provider === 'grok') {
       request.output_format = outputFormat;
       if (quality && quality !== 'auto') {
         request.quality = quality;
       }
-    } else {
+    } else if (provider === 'stabilityai') {
       request.response_format = 'b64_json';
-      if (model === 'dall-e-3' && quality) {
-        request.quality = quality;
-      }
+      // Add stabilityai-specific parameters if needed
     }
 
     console.log('[ImageConsoleTab] Generated request:', request);
@@ -173,7 +184,7 @@ export class ImageConsoleTab {
       const result = await adapter.generate(request);
 
       const base64Urls: string[] = result.imageUrls || [];
-      const format = model === 'gpt-image-1' ? outputFormat : 'png';
+      const format = provider === 'grok' || model === 'gpt-image-1' ? outputFormat : 'png';
       this.imageOutputViewer.setImages(base64Urls, format);
 
       const historyEntry: ImageHistoryEntry = {
@@ -184,7 +195,7 @@ export class ImageConsoleTab {
         timestamp: new Date().toLocaleString(),
         size,
         quality,
-        output_format: model === 'gpt-image-1' ? outputFormat : undefined,
+        output_format: provider === 'grok' || model === 'gpt-image-1' ? outputFormat : undefined,
       };
 
       this.addToHistory(historyEntry);
@@ -194,6 +205,10 @@ export class ImageConsoleTab {
       let errorMessage = error.message || 'Unknown error';
       if (error.message.includes('400')) {
         errorMessage += '. Check model parameters.';
+      } else if (error.message.includes('401')) {
+        errorMessage += '. Verify your API key.';
+      } else if (error.message.includes('429')) {
+        errorMessage += '. Rate limit exceeded. Try again later.';
       }
       new Notice(`Failed to generate image: ${errorMessage}`);
       this.imageOutputViewer.setError(errorMessage);
@@ -206,7 +221,7 @@ export class ImageConsoleTab {
     this.imageControls.setControls(
       entry.size || '1024x1024',
       1, // N is not stored in history, default to 1
-      entry.quality || (entry.model === 'dall-e-3' ? 'standard' : 'auto'),
+      entry.quality || (entry.model === 'dall-e-3' ? 'standard' : entry.provider === 'grok' ? 'standard' : 'auto'),
       entry.output_format || 'png'
     );
     this.imageOutputViewer.setImages(entry.imageUrls || [], entry.output_format || 'png');
@@ -231,6 +246,5 @@ export class ImageConsoleTab {
     console.log('[ImageConsoleTab] Rendering history:', history);
     const imageHistory = history as ImageHistoryEntry[];
     this.promptHistory.updateHistory(imageHistory, this.historyClickHandler.bind(this));
-    // Removed the line that clears the ImageOutputViewer: this.imageOutputViewer.setImages([], 'png');
   }
 }

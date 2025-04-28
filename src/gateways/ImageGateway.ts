@@ -4,6 +4,7 @@ import type { MyPluginSettings } from '../settings/types';
 import { providerMetadata } from '../settings/providers/index';
 import type { ImageAdapter, ImageRequest, ImageResponse } from '../core/Adapter';
 import { OpenAIImageAdapter } from '../adapters/image/OpenAIImageAdapter';
+import { GrokImageAdapter } from '../adapters/image/GrokImageAdapter'; // Add this import
 
 export class ImageGateway {
   private adapters: Record<string, ImageAdapter> = {};
@@ -48,6 +49,9 @@ export class ImageGateway {
       switch (key) {
         case 'openai':
           adapter = new OpenAIImageAdapter(apiKey!, model);
+          break;
+        case 'grok':
+          adapter = new GrokImageAdapter(apiKey!, model);
           break;
         default:
           console.warn(`[ImageGateway] Unsupported image provider: ${key}`);

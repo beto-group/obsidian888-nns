@@ -22,16 +22,26 @@ export interface ImageHistoryEntry extends BaseHistoryEntry {
   output_format?: string;
 }
 
-// Add more history entry types as needed (e.g., VideoHistoryEntry, AudioHistoryEntry)
+// Unified entry type
 export type HistoryEntry = PromptHistoryEntry | ImageHistoryEntry;
 
-// Supported history types
+// All history types
 export type HistoryType = 'text' | 'image' | 'video' | 'audio' | 'ocr' | '3d';
+
+// Mapping type for each historyType to its corresponding entry type
+type HistoryEntryMap = {
+  text: PromptHistoryEntry;
+  image: ImageHistoryEntry;
+  video: BaseHistoryEntry;
+  audio: BaseHistoryEntry;
+  ocr: BaseHistoryEntry;
+  '3d': BaseHistoryEntry;
+};
 
 export class HistoryManager {
   private app: App;
   private secrets: SecretsManager;
-  private basePath = '.obsidian/plugins/obsidian888-nns/history'; // Store history in plugin folder
+  private basePath = '.obsidian/plugins/obsidian888-nns/history';
   private maxEntriesDefault = 10;
 
   constructor(app: App, secrets: SecretsManager) {
@@ -39,9 +49,6 @@ export class HistoryManager {
     this.secrets = secrets;
   }
 
-  /**
-   * Ensures the history directory exists, creating it if necessary.
-   */
   private async ensureHistoryDirectory(): Promise<void> {
     try {
       const exists = await this.app.vault.adapter.exists(this.basePath);
@@ -55,10 +62,16 @@ export class HistoryManager {
     }
   }
 
-  /**
-   * Loads history entries for the specified type from persistent storage.
-   */
-  async loadHistory<T extends BaseHistoryEntry>(type: HistoryType): Promise<T[]> {
+  private normalizeImageUrls(urls: string[]): string[] {
+    return urls.map(url => {
+      if (url.startsWith('data:image/jpeg;base64,data:image/jpeg;base64,')) {
+        return url.replace('data:image/jpeg;base64,data:image/jpeg;base64,', '');
+      }
+      return url;
+    });
+  }
+
+  async loadHistory<K extends HistoryType>(type: K): Promise<HistoryEntryMap[K][]> {
     console.log(`[HistoryManager] Loading history for type: ${type}`);
     const filePath = `${this.basePath}/${type}-history.json`;
     try {
@@ -68,7 +81,14 @@ export class HistoryManager {
         return [];
       }
       const data = await this.app.vault.adapter.read(filePath);
-      const entries: T[] = JSON.parse(data) || [];
+      let entries = JSON.parse(data) as HistoryEntryMap[K][];
+
+      if (type === 'image') {
+        (entries as ImageHistoryEntry[]).forEach(entry => {
+          entry.imageUrls = this.normalizeImageUrls(entry.imageUrls);
+        });
+      }
+
       console.log(`[HistoryManager] Loaded ${entries.length} entries for ${type}`);
       return entries;
     } catch (error) {
@@ -78,10 +98,7 @@ export class HistoryManager {
     }
   }
 
-  /**
-   * Saves history entries for the specified type to persistent storage.
-   */
-  async saveHistory<T extends BaseHistoryEntry>(type: HistoryType, entries: T[]): Promise<void> {
+  async saveHistory<K extends HistoryType>(type: K, entries: HistoryEntryMap[K][]): Promise<void> {
     console.log(`[HistoryManager] Saving ${entries.length} entries for type: ${type}`);
     const filePath = `${this.basePath}/${type}-history.json`;
     try {
@@ -94,9 +111,6 @@ export class HistoryManager {
     }
   }
 
-  /**
-   * Clears all history entries for the specified type.
-   */
   async clearHistory(type: HistoryType): Promise<void> {
     console.log(`[HistoryManager] Clearing history for type: ${type}`);
     const filePath = `${this.basePath}/${type}-history.json`;
@@ -112,17 +126,14 @@ export class HistoryManager {
     }
   }
 
-  /**
-   * Adds a new entry to the history for the specified type, respecting maxEntries.
-   */
-  async addEntry<T extends BaseHistoryEntry>(
-    type: HistoryType,
-    entry: T,
+  async addEntry<K extends HistoryType>(
+    type: K,
+    entry: HistoryEntryMap[K],
     maxEntries: number = this.maxEntriesDefault
   ): Promise<void> {
     console.log(`[HistoryManager] Adding entry to ${type} history`);
     try {
-      const history = await this.loadHistory<T>(type);
+      const history = await this.loadHistory(type);
       history.unshift(entry);
       if (history.length > maxEntries) {
         history.splice(maxEntries);

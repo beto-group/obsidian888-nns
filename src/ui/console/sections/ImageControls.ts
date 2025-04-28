@@ -1,4 +1,3 @@
-
 import { Setting } from 'obsidian';
 
 export class ImageControls {
@@ -12,7 +11,7 @@ export class ImageControls {
     'dall-e-2': ['256x256', '512x512', '1024x1024'],
     'gpt-image-1': ['1024x1024', '1536x1024', '1024x1536'],
     'stable-diffusion': ['512x512', '1024x1024'],
-    'grok-image': ['1024x1024'],
+    'grok-2-image-1212': ['1024x1024'],
   };
 
   private maxN: Record<string, number> = {
@@ -20,7 +19,7 @@ export class ImageControls {
     'dall-e-2': 10,
     'gpt-image-1': 10,
     'stable-diffusion': 4,
-    'grok-image': 1,
+    'grok-2-image-1212': 10,
   };
 
   private modelQualities: Record<string, string[]> = {
@@ -28,10 +27,16 @@ export class ImageControls {
     'dall-e-2': [],
     'gpt-image-1': ['low', 'medium', 'high', 'auto'],
     'stable-diffusion': [],
-    'grok-image': [],
+    'grok-2-image-1212': ['standard'],
   };
 
-  private outputFormats: string[] = ['png', 'jpeg', 'webp'];
+  private outputFormats: Record<string, string[]> = {
+    'dall-e-3': ['png'],
+    'dall-e-2': ['png'],
+    'gpt-image-1': ['png', 'jpeg', 'webp'],
+    'stable-diffusion': ['png'],
+    'grok-2-image-1212': ['jpeg'],
+  };
 
   render(container: HTMLElement) {
     const controlsRow = container.createEl('div', { cls: 'ai-console-controls-row' });
@@ -101,15 +106,17 @@ export class ImageControls {
 
     // Update output format dropdown
     const outputFormatSetting = this.outputFormatDropdown.parentElement?.parentElement as HTMLElement;
-    if (model === 'gpt-image-1') {
-      outputFormatSetting.style.display = 'block';
-      const currentFormat = this.outputFormatDropdown.value || 'png';
-      this.outputFormatDropdown.innerHTML = '';
-      this.outputFormats.forEach(f => this.outputFormatDropdown.add(new Option(f.toUpperCase(), f)));
-      this.outputFormatDropdown.value = this.outputFormats.includes(currentFormat) ? currentFormat : 'png';
-      console.log('[ImageControls] Updated output format dropdown:', this.outputFormatDropdown.value);
-    } else {
+    const formats = this.outputFormats[model] || ['png'];
+    if (formats.length <= 1) {
       outputFormatSetting.style.display = 'none';
+      this.outputFormatDropdown.value = formats[0];
+    } else {
+      outputFormatSetting.style.display = 'block';
+      const currentFormat = this.outputFormatDropdown.value || formats[0];
+      this.outputFormatDropdown.innerHTML = '';
+      formats.forEach(f => this.outputFormatDropdown.add(new Option(f.toUpperCase(), f)));
+      this.outputFormatDropdown.value = formats.includes(currentFormat) ? currentFormat : formats[0];
+      console.log('[ImageControls] Updated output format dropdown:', this.outputFormatDropdown.value);
     }
   }
 

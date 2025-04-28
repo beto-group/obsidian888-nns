@@ -134,4 +134,54 @@ export abstract class GrokBaseAdapter {
             throw error;
         }
     }
+
+    public static async fetchImageModels(apiKey: string): Promise<string[]> {
+        try {
+            if (!apiKey) {
+                throw new Error(`[GrokBaseAdapter] API key is required for fetching image models.`);
+            }
+            const url = 'https://api.x.ai/v1/image-generation-models';
+            console.log(`[GrokBaseAdapter] Sending image model fetch request:`, {
+                url,
+                headers: { Authorization: `Bearer ${apiKey.trim()}` }
+            });
+
+            const response = await requestUrl({
+                url,
+                method: 'GET',
+                headers: {
+                    Authorization: `Bearer ${apiKey.trim()}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `grok image models error: ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.log(`[GrokBaseAdapter] Error response body:`, errorBody);
+                    errorMessage += ` - ${errorBody}`;
+                    if (response.status === 401) {
+                        errorMessage += '. Invalid API key. Verify your xAI API key at https://x.ai/api.';
+                    } else if (response.status === 403) {
+                        errorMessage += '. Check your API key, permissions, or account status at console.x.ai.';
+                    } else if (response.status === 429) {
+                        errorMessage += '. Rate limit exceeded. Try again later or check your xAI account at https://x.ai/api.';
+                    } else if (response.status >= 500) {
+                        errorMessage += '. Server error at xAI. Try again later or contact xAI support.';
+                    }
+                } catch {
+                    errorMessage += ' - Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+
+            const models = (response.json as { models: { id: string }[] }).models?.map(m => m.id).sort() ?? [];
+            console.log(`[GrokBaseAdapter] Fetched image models:`, models);
+            return models;
+        } catch (error) {
+            console.error(`[GrokBaseAdapter] Image model fetch error:`, error);
+            throw error;
+        }
+    }
 }

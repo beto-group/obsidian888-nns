@@ -74,11 +74,29 @@ export class PromptHistory {
         overflow: hidden;
         text-overflow: ellipsis;
         margin: 0;
-        padding-right: 30px; /* Ensure space for the copy button */
+        padding-right: 30px;
+      }
+      .ai-console-history-error {
+        color: #ff5555;
+        font-size: 12px;
       }
     `;
 
     this.updateHistory(this.history, this.clickHandler);
+  }
+
+  // Utility to validate or normalize image URLs
+  private isValidImageUrl(url: string): boolean {
+    return (url.startsWith('data:image/') && url.includes(';base64,')) || url.startsWith('http');
+  }
+
+  private normalizeImageUrl(url: string, format: string = 'png'): string {
+    if (url.startsWith('data:image/')) {
+      return url; // Already a data URL, use as-is
+    }
+    // Assume raw base64 and construct data URL
+    const mimeType = `image/${format}`;
+    return `data:${mimeType};base64,${url}`;
   }
 
   updateHistory(history: HistoryEntry[], clickHandler: (entry: HistoryEntry) => void) {
@@ -97,18 +115,15 @@ export class PromptHistory {
       return;
     }
 
-    // Clear existing entries
     historySection.innerHTML = '';
     historySection.createEl('h4', { text: 'Prompt History' });
 
     this.history.forEach((entry, index) => {
       const entryEl = historySection.createEl('div', { cls: 'ai-console-history-entry' });
-      // Add the prompt with truncation
       entryEl.createEl('p', { cls: 'ai-console-history-prompt', text: `Prompt: ${entry.prompt}` });
       entryEl.createEl('p', { text: `Provider: ${entry.provider} | Model: ${entry.model}` });
       entryEl.createEl('p', { text: `Time: ${entry.timestamp}` });
 
-      // Add copy button with Lucide "Copy" icon
       const copyBtn = entryEl.createEl('button', { cls: 'ai-console-history-copy-btn' });
       copyBtn.innerHTML = `
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
@@ -126,29 +141,31 @@ export class PromptHistory {
         });
       });
 
-      // For ImageHistoryEntry, display a preview of images
       if ('imageUrls' in entry && entry.imageUrls?.length > 0) {
         const imageContainer = entryEl.createEl('div', { cls: 'ai-console-history-images' });
-        entry.imageUrls.forEach((base64, imgIndex) => {
+        entry.imageUrls.forEach((url, imgIndex) => {
           try {
-            const mimeType = `image/${entry.output_format || 'png'}`;
-            const dataUrl = `data:${mimeType};base64,${base64}`;
-            const img = imageContainer.createEl('img', {
-              cls: 'ai-console-history-image',
-              attr: { src: dataUrl },
-            });
-            img.onerror = () => {
-              img.remove();
-              imageContainer.createEl('p', { text: `Failed to load image ${imgIndex + 1}.` });
-            };
+            const normalizedUrl = this.normalizeImageUrl(url, entry.output_format || 'png');
+            if (this.isValidImageUrl(normalizedUrl)) {
+              const img = imageContainer.createEl('img', {
+                cls: 'ai-console-history-image',
+                attr: { src: normalizedUrl },
+              });
+              img.onerror = () => {
+                img.remove();
+                imageContainer.createEl('p', { cls: 'ai-console-history-error', text: `Failed to load image ${imgIndex + 1}.` });
+              };
+            } else {
+              console.warn('[PromptHistory] Skipping invalid image URL:', url);
+              imageContainer.createEl('p', { cls: 'ai-console-history-error', text: `Invalid image URL ${imgIndex + 1}.` });
+            }
           } catch (e) {
             console.error('[PromptHistory] Failed to render history image:', e);
-            imageContainer.createEl('p', { text: `Failed to render image ${imgIndex + 1}.` });
+            imageContainer.createEl('p', { cls: 'ai-console-history-error', text: `Failed to render image ${imgIndex + 1}.` });
           }
         });
       }
 
-      // Add click handler for the entire entry
       entryEl.addEventListener('click', () => {
         if (this.clickHandler) {
           this.clickHandler(entry);

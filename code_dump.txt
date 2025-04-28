@@ -14,6 +14,7 @@ import { SampleSettingTab } from './src/settings/settings';
 import { DEFAULT_SETTINGS } from './src/settings/defaults';
 import { MyPluginSettings } from './src/settings/types';
 import { SecretsManager } from './src/utils/secrets';
+import { HistoryManager } from './src/utils/historyManager'; // Add HistoryManager import
 import { AiConsoleModal } from './src/ui/console/AiConsoleModal';
 import { registerAiNNS, unregisterAiNNS } from './src/api/aiNNS';
 
@@ -23,6 +24,7 @@ import { registerAiNNS, unregisterAiNNS } from './src/api/aiNNS';
 export default class MyPlugin extends Plugin {
     settings: MyPluginSettings;
     secrets: SecretsManager;
+    historyManager: HistoryManager; // Add historyManager property
 
     /**
      * Plugin entry point
@@ -41,6 +43,10 @@ export default class MyPlugin extends Plugin {
         } catch (error) {
             console.error("[MyPlugin] Error listing secrets on load:", error);
         }
+
+        // Initialize HistoryManager
+        this.historyManager = new HistoryManager(this.app, this.secrets);
+        console.log('[MyPlugin] HistoryManager initialized:', this.historyManager);
 
         // Load plugin settings
         await this.loadSettings();
@@ -187,7 +193,6 @@ class SampleModal extends Modal {
         contentEl.empty();
     }
 }
-
 ===== src/ui/components/TabComponent.ts =====
 
 import { App, setIcon } from 'obsidian';
@@ -219,13 +224,16 @@ export class TabComponent {
   private container: HTMLElement | null = null;
   private tabContentContainer: HTMLElement | null = null;
   private styleElement: HTMLStyleElement | null = null;
+  private onTabChange: (tabId: string) => void; // Callback for tab changes
 
   constructor(
     private app: App,
     private tabs: TabConfig[],
-    initialTabId: string
+    initialTabId: string,
+    onTabChange: (tabId: string) => void = () => {} // Default to no-op
   ) {
     this.activeTabId = tabs.some(t => t.tab.id === initialTabId) ? initialTabId : tabs[0]?.tab.id;
+    this.onTabChange = onTabChange; // Store callback
   }
 
   /**
@@ -268,12 +276,13 @@ export class TabComponent {
   }
 
   /**
-Interp   * Switches to the specified tab and re-renders the content.
+   * Switches to the specified tab and re-renders the content.
    */
   private switchTab(tabId: string): void {
     if (tabId === this.activeTabId) return;
     this.activeTabId = tabId;
     this.renderActiveTab();
+    this.onTabChange(tabId); // Notify on tab change
   }
 
   /**
@@ -350,15 +359,19 @@ export class AiConsoleModal extends Modal {
     this.settings = settings;
     this.secrets = secrets;
     this.historyManager = new HistoryManager(app, secrets);
+    console.log('[AiConsoleModal] Constructor - historyManager:', this.historyManager);
     this.initializeTabs();
     const tabConfigs: TabConfig[] = this.tabs.map(tab => ({
       tab,
       icon: tab.icon,
     }));
-    this.tabComponent = new TabComponent(this.app, tabConfigs, 'text');
+    this.tabComponent = new TabComponent(this.app, tabConfigs, 'text', (tabId: string) => {
+      this.renderHistory(); // Trigger history rendering on tab change
+    });
   }
 
   private initializeTabs() {
+    console.log('[AiConsoleModal] Initializing tabs');
     this.tabs = [
       new TextConsoleTab(this.app, this.settings, this.secrets, this.addToHistory.bind(this)),
       new ImageConsoleTab(this.app, this.settings, this.secrets, this.addToHistory.bind(this)),
@@ -375,22 +388,35 @@ export class AiConsoleModal extends Modal {
     this.contentEl.empty();
     const container = this.contentEl.createEl('div', { cls: 'ai-console-container' });
     this.tabComponent.render(container);
-    // Lazy-load history for the initial tab
-    this.renderHistory();
+    this.renderHistory(); // Load and render history for initial tab
   }
 
   private async addToHistory<T extends BaseHistoryEntry>(entry: T) {
     const activeTabId = this.tabComponent.getActiveTabId() as HistoryType;
-    await this.historyManager.addEntry<T>(activeTabId, entry, this.maxHistoryEntries);
-    await this.renderHistory();
+    console.log('[AiConsoleModal] Adding to history for tab:', activeTabId, 'entry:', entry);
+    try {
+      await this.historyManager.addEntry<T>(activeTabId, entry, this.maxHistoryEntries);
+      await this.renderHistory(); // Refresh history after adding
+    } catch (error) {
+      console.error('[AiConsoleModal] Failed to add history entry for', activeTabId, ':', error);
+      new Notice(`Failed to save ${activeTabId} history.`);
+    }
   }
 
   public async renderHistory() {
     const activeTabId = this.tabComponent.getActiveTabId() as HistoryType;
+    console.log('[AiConsoleModal] Rendering history for tab:', activeTabId);
     const activeTab = this.tabs.find(tab => tab.id === activeTabId);
     if (activeTab && 'renderHistory' in activeTab && activeTab.renderHistory) {
-      const history = await this.historyManager.loadHistory<BaseHistoryEntry>(activeTabId);
-      activeTab.renderHistory(history);
+      try {
+        const history = await this.historyManager.loadHistory<BaseHistoryEntry>(activeTabId);
+        console.log('[AiConsoleModal] History loaded for', activeTabId, ':', history);
+        activeTab.renderHistory(history);
+      } catch (error) {
+        console.error('[AiConsoleModal] Failed to load history for', activeTabId, ':', error);
+        new Notice(`Failed to load ${activeTabId} history.`);
+        activeTab.renderHistory([]); // Render empty history as fallback
+      }
     }
   }
 
@@ -410,24 +436,16 @@ interface ConsoleTab {
 }
 ===== src/ui/console/tabs/ImageConsoleTab.ts =====
 
-import { App, Notice, Setting } from 'obsidian';
+import { App, Notice } from 'obsidian';
 import type { MyPluginSettings } from '../../../settings/types';
 import type { SecretsManager } from '../../../utils/secrets';
 import { ImageGateway } from '../../../gateways/ImageGateway';
 import { ProviderSelector } from '../sections/ProviderSelector';
 import { PromptInput } from '../sections/PromptInput';
 import { PromptHistory } from '../sections/PromptHistory';
-
-interface ImageHistoryEntry {
-  provider: string;
-  model: string;
-  prompt: string;
-  imageUrls: string[];
-  timestamp: string;
-  size?: string;
-  quality?: string;
-  output_format?: string;
-}
+import { ImageControls } from '../sections/ImageControls';
+import { ImageOutputViewer } from '../sections/ImageOutputViewer';
+import { ImageHistoryEntry, BaseHistoryEntry } from '../../../utils/historyManager';
 
 export class ImageConsoleTab {
   id = 'image';
@@ -438,64 +456,35 @@ export class ImageConsoleTab {
   private providerSelector: ProviderSelector;
   private promptInput: PromptInput;
   private promptHistory: PromptHistory;
-  private history: ImageHistoryEntry[] = [];
+  private imageControls: ImageControls;
+  private imageOutputViewer: ImageOutputViewer;
   private validProviders = ['openai', 'stabilityai', 'grok'];
   private blobUrls: string[] = [];
-
-  private sizeDropdown?: HTMLSelectElement;
-  private nImagesInput?: HTMLInputElement;
-  private qualityDropdown?: HTMLSelectElement;
-  private outputFormatDropdown?: HTMLSelectElement;
-  private outputArea?: HTMLElement;
 
   private providerModels: Record<string, string[]> = {
     openai: ['dall-e-3', 'dall-e-2', 'gpt-image-1'],
     stabilityai: ['stable-diffusion'],
-    grok: ['grok-image'],
+    grok: ['grok-2-image-1212'], // Updated to match xAI API model
   };
 
   private defaultModels: Record<string, string> = {
-    openai: 'dall-e-3',
+    openai: 'gpt-image-1',
     stabilityai: 'stable-diffusion',
-    grok: 'grok-image',
+    grok: 'grok-2-image-1212', // Updated to match xAI API model
   };
-
-  private modelSizes: Record<string, string[]> = {
-    'dall-e-3': ['1024x1024', '1792x1024', '1024x1792'],
-    'dall-e-2': ['256x256', '512x512', '1024x1024'],
-    'gpt-image-1': ['1024x1024', '1536x1024', '1024x1536'],
-    'stable-diffusion': ['512x512', '1024x1024'],
-    'grok-image': ['1024x1024'],
-  };
-
-  private maxN: Record<string, number> = {
-    'dall-e-3': 1,
-    'dall-e-2': 10,
-    'gpt-image-1': 10,
-    'stable-diffusion': 4,
-    'grok-image': 1,
-  };
-
-  private modelQualities: Record<string, string[]> = {
-    'dall-e-3': ['standard', 'hd'],
-    'dall-e-2': [],
-    'gpt-image-1': ['low', 'medium', 'high', 'auto'],
-    'stable-diffusion': [],
-    'grok-image': [],
-  };
-
-  private outputFormats: string[] = ['png', 'jpeg', 'webp'];
 
   constructor(
     private app: App,
     private settings: MyPluginSettings,
     private secrets: SecretsManager,
-    private addToHistory?: (entry: ImageHistoryEntry) => void,
-    private updateHistoryCallback?: () => void
+    private addToHistory: (entry: ImageHistoryEntry) => void
   ) {
     this.providerSelector = new ProviderSelector(app, settings, secrets, this.validProviders, this.providerModels);
     this.promptInput = new PromptInput();
     this.promptHistory = new PromptHistory();
+    this.imageControls = new ImageControls();
+    this.imageOutputViewer = new ImageOutputViewer();
+    console.log('[ImageConsoleTab] Constructor initialized');
   }
 
   async render(container: HTMLElement) {
@@ -525,86 +514,13 @@ export class ImageConsoleTab {
 
     const updateUI = () => {
       const provider = this.providerSelector.getSelectedProvider();
-      const model = this.providerSelector.getSelectedModel() || this.defaultModels[provider] || 'dall-e-3';
-
+      const model = this.providerSelector.getSelectedModel() || this.defaultModels[provider] || 'gpt-image-1';
       console.log('[ImageConsoleTab] updateUI called - Provider:', provider, 'Model:', model);
-
-      // Update size dropdown
-      if (this.sizeDropdown) {
-        const currentSize = this.sizeDropdown.value || '';
-        console.log('[ImageConsoleTab] Current size:', currentSize);
-        this.sizeDropdown.innerHTML = '';
-        const sizes = this.modelSizes[model] || ['1024x1024'];
-        sizes.forEach(size => this.sizeDropdown!.add(new Option(size, size)));
-        this.sizeDropdown.value = sizes.includes(currentSize) ? currentSize : sizes[0];
-        console.log('[ImageConsoleTab] Updated size dropdown:', this.sizeDropdown.value);
-      } else {
-        console.warn('[ImageConsoleTab] sizeDropdown is undefined');
-      }
-
-      // Update max n
-      if (this.nImagesInput) {
-        const max = this.maxN[model] || 1;
-        this.nImagesInput.max = max.toString();
-        const currentN = parseInt(this.nImagesInput.value) || 1;
-        if (currentN > max) {
-          this.nImagesInput.value = max.toString();
-        }
-        console.log('[ImageConsoleTab] Updated n input: max=', max, 'value=', this.nImagesInput.value);
-      } else {
-        console.warn('[ImageConsoleTab] nImagesInput is undefined');
-      }
-
-      // Update quality dropdown
-      if (this.qualityDropdown?.parentElement?.parentElement) {
-        const qualitySetting = this.qualityDropdown.parentElement.parentElement as HTMLElement;
-        const qualities = this.modelQualities[model] || [];
-        console.log('[ImageConsoleTab] Qualities for model:', model, qualities);
-        if (qualities.length === 0) {
-          qualitySetting.style.display = 'none';
-          console.log('[ImageConsoleTab] Quality dropdown hidden');
-        } else {
-          qualitySetting.style.display = 'block';
-          const currentQuality = this.qualityDropdown.value || '';
-          this.qualityDropdown.innerHTML = '';
-          qualities.forEach(q => this.qualityDropdown!.add(new Option(q.charAt(0).toUpperCase() + q.slice(1), q)));
-          this.qualityDropdown.value = qualities.includes(currentQuality) ? currentQuality : qualities[0];
-          console.log('[ImageConsoleTab] Updated quality dropdown:', this.qualityDropdown.value);
-        }
-      } else {
-        console.warn('[ImageConsoleTab] qualityDropdown or its parent is undefined');
-      }
-
-      // Update output format dropdown
-      if (this.outputFormatDropdown?.parentElement?.parentElement) {
-        const outputFormatSetting = this.outputFormatDropdown.parentElement.parentElement as HTMLElement;
-        if (model === 'gpt-image-1') {
-          outputFormatSetting.style.display = 'block';
-          const currentFormat = this.outputFormatDropdown.value || '';
-          this.outputFormatDropdown.innerHTML = '';
-          this.outputFormats.forEach(f => this.outputFormatDropdown!.add(new Option(f.toUpperCase(), f)));
-          this.outputFormatDropdown.value = this.outputFormats.includes(currentFormat) ? currentFormat : 'png';
-          console.log('[ImageConsoleTab] Updated output format dropdown:', this.outputFormatDropdown.value);
-        } else {
-          outputFormatSetting.style.display = 'none';
-          console.log('[ImageConsoleTab] Output format dropdown hidden');
-        }
-      } else {
-        console.warn('[ImageConsoleTab] outputFormatDropdown or its parent is undefined');
-      }
+      this.imageControls.updateControls(model);
     };
 
-    // Trigger updateUI on provider change
-    this.providerSelector.onProviderChange((provider: string) => {
-      console.log('[ImageConsoleTab] Provider changed to:', provider);
-      updateUI();
-    });
-
-    // Trigger updateUI on model change
-    this.providerSelector.onModelChange((model: string) => {
-      console.log('[ImageConsoleTab] Model changed to:', model);
-      updateUI();
-    });
+    this.providerSelector.onProviderChange(updateUI);
+    this.providerSelector.onModelChange(updateUI);
 
     const promptRow = fixedSection.createEl('div', { cls: 'ai-console-prompt-section-full' });
     this.promptInput.render(promptRow, () => {});
@@ -613,42 +529,7 @@ export class ImageConsoleTab {
       promptTextarea.nextElementSibling.remove();
     }
 
-    const controlsRow = fixedSection.createEl('div', { cls: 'ai-console-controls-row' });
-
-    new Setting(controlsRow)
-      .setName('Size')
-      .addDropdown(dropdown => {
-        this.sizeDropdown = dropdown.selectEl;
-        console.log('[ImageConsoleTab] sizeDropdown initialized');
-      })
-      .controlEl.style.flex = '0 0 auto';
-
-    new Setting(controlsRow)
-      .setName('N')
-      .addText(text => {
-        this.nImagesInput = text.inputEl;
-        this.nImagesInput.type = 'number';
-        this.nImagesInput.min = '1';
-        this.nImagesInput.value = '1';
-        this.nImagesInput.style.width = '50px';
-      })
-      .controlEl.style.flex = '0 0 auto';
-
-    new Setting(controlsRow)
-      .setName('Quality')
-      .addDropdown(dropdown => {
-        this.qualityDropdown = dropdown.selectEl;
-        console.log('[ImageConsoleTab] qualityDropdown initialized');
-      })
-      .controlEl.style.flex = '0 0 auto';
-
-    new Setting(controlsRow)
-      .setName('Output Format')
-      .addDropdown(dropdown => {
-        this.outputFormatDropdown = dropdown.selectEl;
-        console.log('[ImageConsoleTab] outputFormatDropdown initialized');
-      })
-      .controlEl.style.flex = '0 0 auto';
+    this.imageControls.render(fixedSection);
 
     const runButtonRow = fixedSection.createEl('div', { cls: 'ai-console-run-button-row' });
     const runButton = runButtonRow.createEl('button', { text: 'Run', cls: 'ai-console-run-btn' });
@@ -656,85 +537,23 @@ export class ImageConsoleTab {
 
     const scrollableSection = container.createEl('div', { cls: 'ai-console-scrollable-section' });
 
-    const outputSection = scrollableSection.createEl('div', { cls: 'ai-console-output-section' });
-    outputSection.createEl('h4', { text: 'Generated Images' });
-    this.outputArea = outputSection.createEl('div', { cls: 'ai-console-image-grid' });
-
+    this.imageOutputViewer.render(scrollableSection);
     this.promptHistory.render(scrollableSection, this.historyClickHandler.bind(this));
-    if (this.updateHistoryCallback) {
-      this.updateHistoryCallback();
-    }
 
     this.providerSelector.setProvider('openai', this.defaultModels['openai']);
-
-    console.log('[ImageConsoleTab] Performing initial UI update...');
     updateUI();
-
-    const styleEl = container.createEl('style');
-    styleEl.textContent = `
-      .ai-console-fixed-section {
-        flex-shrink: 0;
-      }
-      .ai-console-scrollable-section {
-        flex: 1;
-        overflow-y: auto;
-        max-height: 300px;
-        padding-bottom: 16px;
-      }
-      .ai-console-image-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-        gap: 16px;
-      }
-      .ai-console-controls-row {
-        display: flex;
-        overflow-x: auto;
-        gap: 16px;
-        margin-bottom: 8px;
-        padding-bottom: 4px;
-        white-space: nowrap;
-      }
-      .ai-console-controls-row::-webkit-scrollbar {
-        height: 8px;
-      }
-      .ai-console-controls-row::-webkit-scrollbar-thumb {
-        background: #555;
-        border-radius: 4px;
-      }
-      .ai-console-controls-row::-webkit-scrollbar-track {
-        background: #333;
-      }
-      .ai-console-run-button-row {
-        display: flex;
-        justify-content: center;
-        margin-bottom: 16px;
-      }
-      .ai-console-run-btn {
-        background-color: #7d57c1;
-        color: white;
-        border: none;
-        padding: 8px 16px;
-        border-radius: 4px;
-        cursor: pointer;
-      }
-      .ai-console-run-btn:hover {
-        background-color: #5c3a9e;
-      }
-    `;
   }
 
   private async runPrompt() {
     console.log('[ImageConsoleTab] Run button clicked.');
 
     const provider = this.providerSelector.getSelectedProvider();
-    const model = this.providerSelector.getSelectedModel() || this.defaultModels[provider] || 'dall-e-3';
+    const model = this.providerSelector.getSelectedModel() || this.defaultModels[provider] || 'gpt-image-1';
     const prompt = this.promptInput.getPrompt().trim();
-    const size = this.sizeDropdown?.value || '1024x1024';
-    const n = parseInt(this.nImagesInput?.value || '1', 10) || 1;
-    const quality = this.qualityDropdown?.value || (model === 'dall-e-3' ? 'standard' : 'auto');
-    const output_format = this.outputFormatDropdown?.value || 'png';
-
-    console.log('[ImageConsoleTab] runPrompt - provider:', provider, 'model:', model, 'prompt:', prompt, 'size:', size, 'n:', n, 'quality:', quality, 'output_format:', output_format);
+    const size = this.imageControls.getSize();
+    const n = this.imageControls.getN();
+    const quality = this.imageControls.getQuality();
+    const outputFormat = this.imageControls.getOutputFormat();
 
     if (!prompt) {
       new Notice('Please enter a prompt.');
@@ -765,17 +584,27 @@ export class ImageConsoleTab {
       n,
     };
 
-    // Model-specific request fields
-    if (model === 'gpt-image-1') {
-      request.output_format = output_format;
+    // Provider-specific request configuration
+    if (provider === 'openai') {
+      if (model === 'gpt-image-1') {
+        request.output_format = outputFormat;
+        if (quality && quality !== 'auto') {
+          request.quality = quality;
+        }
+      } else {
+        request.response_format = 'b64_json';
+        if (model === 'dall-e-3' && quality) {
+          request.quality = quality;
+        }
+      }
+    } else if (provider === 'grok') {
+      request.output_format = outputFormat;
       if (quality && quality !== 'auto') {
-        request.quality = quality; // low, medium, high
+        request.quality = quality;
       }
-    } else {
+    } else if (provider === 'stabilityai') {
       request.response_format = 'b64_json';
-      if (model === 'dall-e-3' && quality) {
-        request.quality = quality; // standard or hd
-      }
+      // Add stabilityai-specific parameters if needed
     }
 
     console.log('[ImageConsoleTab] Generated request:', request);
@@ -788,100 +617,72 @@ export class ImageConsoleTab {
     }
 
     try {
-      if (this.outputArea) {
-        this.outputArea.empty();
-        this.outputArea.setText('Generating...');
-      }
+      this.imageOutputViewer.setLoading();
 
       const result = await adapter.generate(request);
 
-      if (this.outputArea) {
-        this.outputArea.empty();
-        const renderableUrls: string[] = [];
-        result.imageUrls.forEach((url: string) => {
-          let imgSrc = url;
-          try {
-            const binary = atob(url);
-            const array = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) {
-              array[i] = binary.charCodeAt(i);
-            }
-            const blob = new Blob([array], { type: `image/${model === 'gpt-image-1' ? output_format : 'png'}` });
-            imgSrc = URL.createObjectURL(blob);
-            this.blobUrls.push(imgSrc);
-          } catch (e) {
-            console.error('[ImageConsoleTab] Failed to decode base64:', e);
-            return;
-          }
-          renderableUrls.push(imgSrc);
-          const img = this.outputArea!.createEl('img', {
-            attr: { src: imgSrc, style: 'max-width: 100%; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.2);' },
-          });
-          img.onerror = () => {
-            img.remove();
-            this.outputArea!.createEl('p', { text: 'Failed to load image.' });
-            if (imgSrc.startsWith('blob:')) {
-              URL.revokeObjectURL(imgSrc);
-              this.blobUrls = this.blobUrls.filter(u => u !== imgSrc);
-            }
-          };
-          img.onload = () => {
-            if (imgSrc.startsWith('blob:')) {
-              URL.revokeObjectURL(imgSrc);
-              this.blobUrls = this.blobUrls.filter(u => u !== imgSrc);
-            }
-          };
-        });
+      const base64Urls: string[] = result.imageUrls || [];
+      const format = provider === 'grok' || model === 'gpt-image-1' ? outputFormat : 'png';
+      this.imageOutputViewer.setImages(base64Urls, format);
 
-        const historyEntry: ImageHistoryEntry = {
-          provider,
-          model,
-          prompt,
-          imageUrls: renderableUrls,
-          timestamp: new Date().toLocaleString(),
-          size,
-          quality,
-          output_format: model === 'gpt-image-1' ? output_format : undefined,
-        };
+      const historyEntry: ImageHistoryEntry = {
+        provider,
+        model,
+        prompt,
+        imageUrls: base64Urls,
+        timestamp: new Date().toLocaleString(),
+        size,
+        quality,
+        output_format: provider === 'grok' || model === 'gpt-image-1' ? outputFormat : undefined,
+      };
 
-        this.history.unshift(historyEntry);
-        if (this.history.length > 10) this.history.pop();
-        if (this.addToHistory) this.addToHistory(historyEntry);
-        if (this.updateHistoryCallback) this.updateHistoryCallback();
-
-        console.log('[ImageConsoleTab] Image(s) generated:', renderableUrls);
-      }
+      this.addToHistory(historyEntry);
+      console.log('[ImageConsoleTab] Image(s) generated, base64 count:', base64Urls.length);
     } catch (error: any) {
       console.error('[ImageConsoleTab] Generation error:', error);
       let errorMessage = error.message || 'Unknown error';
       if (error.message.includes('400')) {
-        errorMessage += '. Check model parameters (e.g., gpt-image-1 does not support response_format).';
+        errorMessage += '. Check model parameters.';
+      } else if (error.message.includes('401')) {
+        errorMessage += '. Verify your API key.';
+      } else if (error.message.includes('429')) {
+        errorMessage += '. Rate limit exceeded. Try again later.';
       }
       new Notice(`Failed to generate image: ${errorMessage}`);
-      if (this.outputArea) this.outputArea.setText(`Error: ${errorMessage}`);
+      this.imageOutputViewer.setError(errorMessage);
     }
   }
 
   private historyClickHandler(entry: ImageHistoryEntry) {
     this.providerSelector.setProvider(entry.provider, entry.model);
     this.promptInput.setPrompt(entry.prompt);
-    if (this.sizeDropdown) this.sizeDropdown.value = entry.size || '1024x1024';
-    if (this.qualityDropdown) this.qualityDropdown.value = entry.quality || (entry.model === 'dall-e-3' ? 'standard' : 'auto');
-    if (this.outputFormatDropdown && entry.output_format) this.outputFormatDropdown.value = entry.output_format;
+    this.imageControls.setControls(
+      entry.size || '1024x1024',
+      1, // N is not stored in history, default to 1
+      entry.quality || (entry.model === 'dall-e-3' ? 'standard' : entry.provider === 'grok' ? 'standard' : 'auto'),
+      entry.output_format || 'png'
+    );
+    this.imageOutputViewer.setImages(entry.imageUrls || [], entry.output_format || 'png');
     console.log('[ImageConsoleTab] History entry selected:', entry);
   }
 
   cleanup() {
-    this.blobUrls.forEach(url => URL.revokeObjectURL(url));
+    this.blobUrls.forEach(url => {
+      if (url.startsWith('blob:')) {
+        URL.revokeObjectURL(url);
+      }
+    });
     this.blobUrls = [];
     this.providerSelector.cleanup();
     this.promptInput.cleanup();
     this.promptHistory.cleanup();
+    this.imageControls.cleanup();
+    this.imageOutputViewer.cleanup();
   }
 
-  renderHistory(history: (ImageHistoryEntry | any)[]) {
-    const imageHistory = history.filter((entry): entry is ImageHistoryEntry => 'imageUrls' in entry);
-    this.history = imageHistory; // Update the internal history to match the filtered history
+  renderHistory(history: BaseHistoryEntry[]) {
+    console.log('[ImageConsoleTab] Rendering history:', history);
+    const imageHistory = history as ImageHistoryEntry[];
     this.promptHistory.updateHistory(imageHistory, this.historyClickHandler.bind(this));
   }
 }
@@ -944,7 +745,7 @@ import { ParameterControls } from '../sections/ParameterControls';
 import { PromptInput } from '../sections/PromptInput';
 import { OutputViewer } from '../sections/OutputViewer';
 import { PromptHistory } from '../sections/PromptHistory';
-import { PromptHistoryEntry } from '../../../utils/historyManager';
+import { PromptHistoryEntry, BaseHistoryEntry } from '../../../utils/historyManager';
 
 export class TextConsoleTab {
   id = 'text';
@@ -968,6 +769,7 @@ export class TextConsoleTab {
     this.promptInput = new PromptInput();
     this.outputViewer = new OutputViewer();
     this.promptHistory = new PromptHistory();
+    console.log('[TextConsoleTab] Constructor initialized');
   }
 
   async render(container: HTMLElement) {
@@ -1083,6 +885,8 @@ export class TextConsoleTab {
   private historyClickHandler(entry: PromptHistoryEntry) {
     this.providerSelector.setProvider(entry.provider, entry.model);
     this.promptInput.setPrompt(entry.prompt);
+    this.outputViewer.setOutput(entry.output); // Add this line to populate the output field
+    console.log('[TextConsoleTab] History entry selected:', entry);
   }
 
   cleanup() {
@@ -1093,8 +897,9 @@ export class TextConsoleTab {
     this.promptHistory.cleanup();
   }
 
-  renderHistory(history: PromptHistoryEntry[]) {
-    this.promptHistory.updateHistory(history, this.historyClickHandler.bind(this));
+  renderHistory(history: BaseHistoryEntry[]) {
+    console.log('[TextConsoleTab] Rendering history:', history);
+    this.promptHistory.updateHistory(history as PromptHistoryEntry[], this.historyClickHandler.bind(this));
   }
 }
 ===== src/ui/console/tabs/OcrConsoleTab.ts =====
@@ -1212,6 +1017,150 @@ export class ParameterControls {
 
   cleanup() {
     // No cleanup needed for sliders and inputs
+  }
+}
+===== src/ui/console/sections/ImageControls.ts =====
+
+
+import { Setting } from 'obsidian';
+
+export class ImageControls {
+  private sizeDropdown: HTMLSelectElement;
+  private nImagesInput: HTMLInputElement;
+  private qualityDropdown: HTMLSelectElement;
+  private outputFormatDropdown: HTMLSelectElement;
+
+  private modelSizes: Record<string, string[]> = {
+    'dall-e-3': ['1024x1024', '1792x1024', '1024x1792'],
+    'dall-e-2': ['256x256', '512x512', '1024x1024'],
+    'gpt-image-1': ['1024x1024', '1536x1024', '1024x1536'],
+    'stable-diffusion': ['512x512', '1024x1024'],
+    'grok-image': ['1024x1024'],
+  };
+
+  private maxN: Record<string, number> = {
+    'dall-e-3': 1,
+    'dall-e-2': 10,
+    'gpt-image-1': 10,
+    'stable-diffusion': 4,
+    'grok-image': 1,
+  };
+
+  private modelQualities: Record<string, string[]> = {
+    'dall-e-3': ['standard', 'hd'],
+    'dall-e-2': [],
+    'gpt-image-1': ['low', 'medium', 'high', 'auto'],
+    'stable-diffusion': [],
+    'grok-image': [],
+  };
+
+  private outputFormats: string[] = ['png', 'jpeg', 'webp'];
+
+  render(container: HTMLElement) {
+    const controlsRow = container.createEl('div', { cls: 'ai-console-controls-row' });
+
+    new Setting(controlsRow)
+      .setName('Size')
+      .addDropdown(dropdown => {
+        this.sizeDropdown = dropdown.selectEl;
+      })
+      .controlEl.style.flex = '0 0 auto';
+
+    new Setting(controlsRow)
+      .setName('N')
+      .addText(text => {
+        this.nImagesInput = text.inputEl;
+        this.nImagesInput.type = 'number';
+        this.nImagesInput.min = '1';
+        this.nImagesInput.value = '1';
+        this.nImagesInput.style.width = '50px';
+      })
+      .controlEl.style.flex = '0 0 auto';
+
+    new Setting(controlsRow)
+      .setName('Quality')
+      .addDropdown(dropdown => {
+        this.qualityDropdown = dropdown.selectEl;
+      })
+      .controlEl.style.flex = '0 0 auto';
+
+    new Setting(controlsRow)
+      .setName('Output Format')
+      .addDropdown(dropdown => {
+        this.outputFormatDropdown = dropdown.selectEl;
+      })
+      .controlEl.style.flex = '0 0 auto';
+  }
+
+  updateControls(model: string) {
+    // Update size dropdown
+    const currentSize = this.sizeDropdown.value || '1024x1024';
+    this.sizeDropdown.innerHTML = '';
+    const sizes = this.modelSizes[model] || ['1024x1024'];
+    sizes.forEach(size => this.sizeDropdown.add(new Option(size, size)));
+    this.sizeDropdown.value = sizes.includes(currentSize) ? currentSize : sizes[0];
+    console.log('[ImageControls] Updated size dropdown:', this.sizeDropdown.value);
+
+    // Update max N
+    const max = this.maxN[model] || 1;
+    this.nImagesInput.max = max.toString();
+    const currentN = parseInt(this.nImagesInput.value) || 1;
+    this.nImagesInput.value = Math.min(currentN, max).toString();
+    console.log('[ImageControls] Updated N input: max=', max, 'value=', this.nImagesInput.value);
+
+    // Update quality dropdown
+    const qualitySetting = this.qualityDropdown.parentElement?.parentElement as HTMLElement;
+    const qualities = this.modelQualities[model] || [];
+    if (qualities.length === 0) {
+      qualitySetting.style.display = 'none';
+    } else {
+      qualitySetting.style.display = 'block';
+      const currentQuality = this.qualityDropdown.value || qualities[0];
+      this.qualityDropdown.innerHTML = '';
+      qualities.forEach(q => this.qualityDropdown.add(new Option(q.charAt(0).toUpperCase() + q.slice(1), q)));
+      this.qualityDropdown.value = qualities.includes(currentQuality) ? currentQuality : qualities[0];
+      console.log('[ImageControls] Updated quality dropdown:', this.qualityDropdown.value);
+    }
+
+    // Update output format dropdown
+    const outputFormatSetting = this.outputFormatDropdown.parentElement?.parentElement as HTMLElement;
+    if (model === 'gpt-image-1') {
+      outputFormatSetting.style.display = 'block';
+      const currentFormat = this.outputFormatDropdown.value || 'png';
+      this.outputFormatDropdown.innerHTML = '';
+      this.outputFormats.forEach(f => this.outputFormatDropdown.add(new Option(f.toUpperCase(), f)));
+      this.outputFormatDropdown.value = this.outputFormats.includes(currentFormat) ? currentFormat : 'png';
+      console.log('[ImageControls] Updated output format dropdown:', this.outputFormatDropdown.value);
+    } else {
+      outputFormatSetting.style.display = 'none';
+    }
+  }
+
+  setControls(size: string, n: number, quality: string, outputFormat: string) {
+    if (this.sizeDropdown) this.sizeDropdown.value = size;
+    if (this.nImagesInput) this.nImagesInput.value = n.toString();
+    if (this.qualityDropdown) this.qualityDropdown.value = quality;
+    if (this.outputFormatDropdown) this.outputFormatDropdown.value = outputFormat;
+  }
+
+  getSize(): string {
+    return this.sizeDropdown.value || '1024x1024';
+  }
+
+  getN(): number {
+    return parseInt(this.nImagesInput.value) || 1;
+  }
+
+  getQuality(): string {
+    return this.qualityDropdown.value || 'standard';
+  }
+
+  getOutputFormat(): string {
+    return this.outputFormatDropdown.value || 'png';
+  }
+
+  cleanup() {
+    // No cleanup needed for dropdowns and inputs
   }
 }
 ===== src/ui/console/sections/ProviderSelector.ts =====
@@ -1425,89 +1374,224 @@ export class OutputViewer {
       // No cleanup needed for output elements
     }
   }
+===== src/ui/console/sections/ImageOutputViewer.ts =====
+
+export class ImageOutputViewer {
+    private outputArea: HTMLElement;
+    private images: string[] = [];
+    private format: string = 'png';
+  
+    render(container: HTMLElement) {
+      const outputSection = container.createEl('div', { cls: 'ai-console-output-section' });
+      outputSection.createEl('h4', { text: 'Generated Images' });
+      this.outputArea = outputSection.createEl('div', { cls: 'ai-console-image-grid' });
+      this.renderImages();
+    }
+  
+    setImages(images: string[], format: string) {
+      this.images = images;
+      this.format = format;
+      this.renderImages();
+    }
+  
+    private renderImages() {
+      this.outputArea.empty();
+      if (this.images.length === 0) {
+        this.outputArea.setText('No images to display.');
+        return;
+      }
+  
+      this.images.forEach((base64, index) => {
+        try {
+          const mimeType = `image/${this.format}`;
+          const dataUrl = `data:${mimeType};base64,${base64}`;
+          const img = this.outputArea.createEl('img', {
+            attr: { src: dataUrl, style: 'max-width: 100%; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.2);' },
+          });
+          img.onerror = () => {
+            img.remove();
+            this.outputArea.createEl('p', { text: `Failed to load image ${index + 1}.` });
+          };
+        } catch (e) {
+          console.error('[ImageOutputViewer] Failed to render image:', e);
+          this.outputArea.createEl('p', { text: `Failed to render image ${index + 1}.` });
+        }
+      });
+    }
+  
+    setLoading() {
+      this.outputArea.empty();
+      this.outputArea.setText('Generating...');
+    }
+  
+    setError(message: string) {
+      this.outputArea.empty();
+      this.outputArea.setText(`Error: ${message}`);
+    }
+  
+    cleanup() {
+      this.images = [];
+      this.format = 'png';
+    }
+  }
 ===== src/ui/console/sections/PromptHistory.ts =====
 
-import type { App } from 'obsidian';
-import { BaseHistoryEntry, ImageHistoryEntry } from '../../../utils/historyManager';
+import { App, Notice } from 'obsidian';
+import type { PromptHistoryEntry, ImageHistoryEntry } from '../../../utils/historyManager';
 
-// Type guard to check if entry is ImageHistoryEntry
-function isImageHistoryEntry(entry: BaseHistoryEntry): entry is ImageHistoryEntry {
-  return 'imageUrls' in entry;
-}
+type HistoryEntry = PromptHistoryEntry | ImageHistoryEntry;
 
 export class PromptHistory {
+  private history: HistoryEntry[] = [];
   private container?: HTMLElement;
-  private historyContainer?: HTMLElement;
+  private clickHandler?: (entry: HistoryEntry) => void;
 
-  constructor() {}
+  render(container: HTMLElement, clickHandler: (entry: HistoryEntry) => void) {
+    console.log('[PromptHistory] Rendering...');
+    this.container = container;
+    this.clickHandler = clickHandler;
 
-  render<T extends BaseHistoryEntry>(container: HTMLElement, onClick: (entry: T) => void) {
-    this.container = container.createEl('div', { cls: 'ai-console-history-section' });
-    this.container.createEl('h4', { text: 'Prompt History' });
-    this.historyContainer = this.container.createEl('div', { cls: 'ai-console-history-scrollable' });
-    this.updateHistory([], onClick);
+    const historySection = this.container.createEl('div', { cls: 'ai-console-history-section' });
+    historySection.createEl('h4', { text: 'Prompt History' });
+
+    const styleEl = this.container.createEl('style');
+    styleEl.textContent = `
+      .ai-console-history-section {
+        margin-top: 16px;
+      }
+      .ai-console-history-entry {
+        padding: 8px;
+        margin-bottom: 8px;
+        background-color: #2f2f2f;
+        border-radius: 4px;
+        cursor: pointer;
+        position: relative;
+      }
+      .ai-console-history-entry:hover {
+        background-color: #3f3f3f;
+      }
+      .ai-console-history-copy-btn {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .ai-console-history-copy-btn svg {
+        width: 16px;
+        height: 16px;
+        stroke: #ffffff;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        fill: none;
+      }
+      .ai-console-history-copy-btn:hover svg {
+        stroke: #cccccc;
+      }
+      .ai-console-history-images {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .ai-console-history-image {
+        max-width: 50px;
+        max-height: 50px;
+        border-radius: 4px;
+      }
+      .ai-console-history-prompt {
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin: 0;
+        padding-right: 30px; /* Ensure space for the copy button */
+      }
+    `;
+
+    this.updateHistory(this.history, this.clickHandler);
   }
 
-  updateHistory<T extends BaseHistoryEntry>(history: T[], onClick: (entry: T) => void) {
-    if (!this.container || !this.historyContainer) {
-      console.warn('[PromptHistory] Cannot update history: container or historyContainer is undefined');
+  updateHistory(history: HistoryEntry[], clickHandler: (entry: HistoryEntry) => void) {
+    console.log('[PromptHistory] Updating history:', history);
+    this.history = history;
+    this.clickHandler = clickHandler;
+
+    if (!this.container) {
+      console.warn('[PromptHistory] Container not initialized.');
       return;
     }
 
-    this.historyContainer.empty();
-
-    if (history.length === 0) {
-      this.historyContainer.createEl('p', { 
-        text: 'No history yet.', 
-        cls: 'ai-console-history-empty' 
-      });
+    const historySection = this.container.querySelector('.ai-console-history-section');
+    if (!historySection) {
+      console.warn('[PromptHistory] History section not found.');
       return;
     }
 
-    history.forEach((entry, index) => {
-      const entryEl = this.historyContainer!.createEl('div', { cls: 'ai-console-history-entry' });
-      
-      // Text content
-      const textEl = entryEl.createEl('div', { cls: 'ai-console-history-entry-text' });
-      
-      // Create a single line with spans for better control over spacing
-      const infoLine = textEl.createEl('div', { cls: 'ai-console-history-info' });
-      
-      // Prompt
-      infoLine.createEl('span', { 
-        text: `Prompt: ${entry.prompt.slice(0, 50)}${entry.prompt.length > 50 ? '...' : ''} | `,
-        cls: 'ai-console-history-prompt'
-      });
-      
-      // Provider
-      infoLine.createEl('span', { 
-        text: `Provider: ${entry.provider} | `,
-        cls: 'ai-console-history-provider'
-      });
-      
-      // Model
-      infoLine.createEl('span', { 
-        text: `Model: ${entry.model} | `,
-        cls: 'ai-console-history-model'
-      });
-      
-      // Timestamp
-      infoLine.createEl('span', { 
-        text: `Time: ${entry.timestamp}`,
-        cls: 'ai-console-history-timestamp'
+    // Clear existing entries
+    historySection.innerHTML = '';
+    historySection.createEl('h4', { text: 'Prompt History' });
+
+    this.history.forEach((entry, index) => {
+      const entryEl = historySection.createEl('div', { cls: 'ai-console-history-entry' });
+      // Add the prompt with truncation
+      entryEl.createEl('p', { cls: 'ai-console-history-prompt', text: `Prompt: ${entry.prompt}` });
+      entryEl.createEl('p', { text: `Provider: ${entry.provider} | Model: ${entry.model}` });
+      entryEl.createEl('p', { text: `Time: ${entry.timestamp}` });
+
+      // Add copy button with Lucide "Copy" icon
+      const copyBtn = entryEl.createEl('button', { cls: 'ai-console-history-copy-btn' });
+      copyBtn.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" fill="none"/>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+      `;
+      copyBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(JSON.stringify(entry, null, 2)).then(() => {
+          new Notice('History entry copied to clipboard.');
+        }).catch(err => {
+          console.error('[PromptHistory] Failed to copy entry:', err);
+          new Notice('Failed to copy history entry.');
+        });
       });
 
-      // Image thumbnail for image entries
-      if (isImageHistoryEntry(entry) && entry.imageUrls?.length > 0) {
-        entryEl.createEl('img', {
-          attr: {
-            src: entry.imageUrls[0],
-            alt: 'History thumbnail',
-          },
+      // For ImageHistoryEntry, display a preview of images
+      if ('imageUrls' in entry && entry.imageUrls?.length > 0) {
+        const imageContainer = entryEl.createEl('div', { cls: 'ai-console-history-images' });
+        entry.imageUrls.forEach((base64, imgIndex) => {
+          try {
+            const mimeType = `image/${entry.output_format || 'png'}`;
+            const dataUrl = `data:${mimeType};base64,${base64}`;
+            const img = imageContainer.createEl('img', {
+              cls: 'ai-console-history-image',
+              attr: { src: dataUrl },
+            });
+            img.onerror = () => {
+              img.remove();
+              imageContainer.createEl('p', { text: `Failed to load image ${imgIndex + 1}.` });
+            };
+          } catch (e) {
+            console.error('[PromptHistory] Failed to render history image:', e);
+            imageContainer.createEl('p', { text: `Failed to render image ${imgIndex + 1}.` });
+          }
         });
       }
 
-      entryEl.addEventListener('click', () => onClick(entry));
+      // Add click handler for the entire entry
+      entryEl.addEventListener('click', () => {
+        if (this.clickHandler) {
+          this.clickHandler(entry);
+        }
+      });
     });
   }
 
@@ -1515,8 +1599,9 @@ export class PromptHistory {
     if (this.container) {
       this.container.empty();
       this.container = undefined;
-      this.historyContainer = undefined;
     }
+    this.clickHandler = undefined;
+    this.history = [];
   }
 }
 ===== src/ui/console/sections/PromptInput.ts =====
@@ -1570,33 +1655,34 @@ export const consoleCSS = `
   background: #2F2F2F;
   padding: 0;
   border-bottom: 1px solid var(--background-modifier-border);
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
+  flex-wrap: nowrap; /* Prevent wrapping to ensure all tabs are visible */
+  overflow-x: auto; /* Allow horizontal scrolling if tabs overflow */
+  -webkit-overflow-scrolling: touch; /* Smooth scrolling on touch devices */
 }
 
+/* Custom Scrollbar Styling */
 .ai-console-tab-selector::-webkit-scrollbar {
-  height: 4px;
+  height: 4px; /* Slimmer scrollbar */
 }
 
 .ai-console-tab-selector::-webkit-scrollbar-track {
-  background: #2F2F2F;
+  background: #2F2F2F; /* Match the background of the tab selector */
 }
 
 .ai-console-tab-selector::-webkit-scrollbar-thumb {
-  background: var(--background-modifier-border);
+  background: var(--background-modifier-border); /* Subtle thumb color */
   border-radius: 2px;
 }
 
 .ai-console-tab-selector::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
+  background: var(--text-muted); /* Slightly lighter on hover */
 }
 
 .ai-console-tab-button {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
+  gap: 8px; /* Gap between icon and label */
+  padding: 8px 14px; /* Increased padding for better spacing */
   border: none;
   border-right: 1px solid var(--background-modifier-border);
   background: #2F2F2F;
@@ -1609,9 +1695,9 @@ export const consoleCSS = `
   text-align: center;
   justify-content: center;
   opacity: 0.4;
-  min-width: 70px;
-  white-space: nowrap;
-  flex-shrink: 0;
+  min-width: 70px; /* Slightly increased min-width for better spacing */
+  white-space: nowrap; /* Prevent text wrapping */
+  flex-shrink: 0; /* Prevent the button from shrinking too much */
 }
 
 .ai-console-tab-button:last-child {
@@ -1641,7 +1727,7 @@ export const consoleCSS = `
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
+  flex-shrink: 0; /* Prevent icon from shrinking */
 }
 
 .ai-console-tab-icon svg {
@@ -1652,7 +1738,7 @@ export const consoleCSS = `
 
 .ai-console-tab-label {
   display: inline-block;
-  flex-shrink: 0;
+  flex-shrink: 0; /* Prevent label from shrinking */
 }
 
 .ai-console-tab-content {
@@ -1762,7 +1848,7 @@ export const consoleCSS = `
   border: 1px solid var(--background-modifier-border);
 }
 
-.ai-console-history-section {
+.ai-console-history {
   margin-top: 20px;
   padding: 15px;
   background: var(--background-secondary);
@@ -1770,69 +1856,47 @@ export const consoleCSS = `
   border: 1px solid var(--background-modifier-border);
 }
 
-.ai-console-history-section h4 {
+.ai-console-history h4 {
   margin: 0 0 10px 0;
   font-size: 16px;
   color: var(--text-normal);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
 }
 
-.ai-console-history-scrollable {
+.ai-console-history-list {
+  list-style: none;
+  padding: 0;
   max-height: 200px;
   overflow-y: auto;
 }
 
-.ai-console-history-entry {
-  display: flex;
-  align-items: center;
-  padding: 8px;
+.ai-console-history-list li {
+  padding: 10px;
   border-bottom: 1px solid var(--background-modifier-border);
   cursor: pointer;
+  font-size: 14px;
+  color: var(--text-normal);
   transition: background 0.2s ease;
 }
 
-.ai-console-history-entry:hover {
+.ai-console-history-list li:hover {
   background: var(--background-modifier-hover);
 }
 
-.ai-console-history-entry:last-child {
+.ai-console-history-list li:last-child {
   border-bottom: none;
 }
 
-.ai-console-history-entry-text {
-  flex: 1;
-}
-
-.ai-console-history-info {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  font-size: 14px;
-  color: var(--text-normal);
-}
-
-.ai-console-history-prompt {
-  font-weight: 500;
+.ai-console-history-list strong {
   color: var(--text-accent);
 }
 
-.ai-console-history-provider,
-.ai-console-history-model,
-.ai-console-history-timestamp {
+.ai-console-history-list span {
   color: var(--text-muted);
 }
-
-.ai-console-history-entry img {
-  width: 40px;
-  height: 40px;
-  margin-left: 10px;
-  border-radius: 4px;
-}
-
-.ai-console-history-empty {
-  font-style: italic;
-  color: var(--text-muted);
-}
-
 .ai-console-controls-row {
   display: flex;
   align-items: center;
@@ -1844,16 +1908,116 @@ export const consoleCSS = `
 .ai-console-controls-spacer {
   flex-grow: 1;
 }
-
 .ai-console-fixed-section {
   flex-shrink: 0;
 }
-
 .ai-console-scrollable-section {
   flex: 1;
   overflow-y: auto;
   max-height: 300px;
   padding-bottom: 16px;
+}
+.ai-console-image-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+}
+.ai-console-controls-row {
+  display: flex;
+  overflow-x: auto;
+  gap: 16px;
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  white-space: nowrap;
+}
+.ai-console-controls-row::-webkit-scrollbar {
+  height: 8px;
+}
+.ai-console-controls-row::-webkit-scrollbar-thumb {
+  background: #555;
+  border-radius: 4px;
+}
+.ai-console-controls-row::-webkit-scrollbar-track {
+  background: #333;
+}
+.ai-console-run-button-row {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+.ai-console-run-btn {
+  background-color: #7d57c1;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.ai-console-run-btn:hover {
+  background-color: #5c3a9e;
+}
+  .ai-console-history-section {
+  margin-top: 16px;
+}
+.ai-console-history-scrollable {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 8px;
+  background: #2a2a2a;
+}
+.ai-console-history-scrollable::-webkit-scrollbar {
+  width: 8px;
+}
+.ai-console-history-scrollable::-webkit-scrollbar-thumb {
+  background: #555;
+  border-radius: 4px;
+}
+.ai-console-history-scrollable::-webkit-scrollbar-track {
+  background: #333;
+}
+.ai-console-history-entry {
+  display: flex;
+  align-items: center;
+  padding: 8px;
+  margin-bottom: 8px;
+  background: #333;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.ai-console-history-entry:hover {
+  background: #444;
+}
+.ai-console-history-entry-text {
+  flex: 1;
+  overflow: hidden;
+}
+.ai-console-history-entry-text p {
+  margin: 0;
+  font-size: 12px;
+  color: #ccc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ai-console-history-entry-text p.prompt {
+  color: #fff;
+  font-weight: bold;
+  font-size: 14px;
+}
+.ai-console-history-entry img {
+  max-width: 40px;
+  max-height: 40px;
+  margin-left: 8px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+.ai-console-history-empty {
+  text-align: center;
+  color: #ccc;
+  font-size: 12px;
 }
 `;
 ===== src/settings/validation.ts =====
@@ -3263,6 +3427,90 @@ export class OpenAIImageAdapter extends OpenAIBaseAdapter {
   }
 }
 
+===== src/adapters/image/GrokImageAdapter.ts =====
+
+import type { ImageRequest, ImageResponse } from '../../core/Adapter';
+import { GrokBaseAdapter } from '../base/GrokBaseAdapter';
+
+export class GrokImageAdapter extends GrokBaseAdapter {
+  private defaultModel: string;
+
+  constructor(apiKey: string, model: string = 'grok-2-image-1212') {
+    super(apiKey);
+    this.defaultModel = model;
+    console.log('[GrokImageAdapter] Initialized with model:', model);
+  }
+
+  async generate(request: ImageRequest): Promise<ImageResponse> {
+    const model = request.model || this.defaultModel;
+
+    // Validate model dynamically using fetchImageModels
+    const availableModels = await GrokBaseAdapter.fetchImageModels(this.apiKey);
+    if (!availableModels.includes(model)) {
+      throw new Error(`[GrokImageAdapter] Unsupported model: ${model}. Available models: ${availableModels.join(', ')}`);
+    }
+
+    // Validate number of images (max 10 per xAI API)
+    const n = Math.min(request.n || 1, 10);
+
+    // Validate prompt
+    if (!request.prompt || request.prompt.trim().length === 0) {
+      throw new Error('[GrokImageAdapter] Prompt is required and cannot be empty');
+    }
+    if (request.prompt.length > 1000) {
+      throw new Error('[GrokImageAdapter] Prompt exceeds 1000 character limit');
+    }
+
+    // Build minimal request body for xAI API
+    const body = {
+      prompt: request.prompt,
+      model,
+      n,
+    };
+
+    console.log('[GrokImageAdapter] Sending request body:', body);
+
+    try {
+      // Use /v1/images/generations endpoint (xAI API, OpenAI-compatible)
+      const data = await this.makeRequest('images/generations', body, 'POST');
+
+      // Log raw response for debugging
+      console.log('[GrokImageAdapter] Raw API response:', data);
+
+      // Try parsing multiple possible response formats
+      let imageItems: any[] = [];
+      if (data.images && Array.isArray(data.images)) {
+        imageItems = data.images;
+      } else if (data.data && Array.isArray(data.data)) {
+        imageItems = data.data;
+      } else {
+        throw new Error('[GrokImageAdapter] Invalid response format: Expected images or data array');
+      }
+
+      const imageUrls = imageItems.map((item, index) => {
+        // Try multiple field names for base64 data
+        if (item.base64) return item.base64;
+        if (item.b64_json) return item.b64_json;
+        if (item.image) return item.image;
+        throw new Error(`[GrokImageAdapter] Missing base64 data in response item ${index}`);
+      });
+
+      return { imageUrls };
+    } catch (error: any) {
+      console.error('[GrokImageAdapter] Image generation failed:', error);
+      console.error('[GrokImageAdapter] API error response:', error.response?.data);
+      let errorMessage = error.message || 'Unknown error';
+      if (error.message.includes('400')) {
+        errorMessage = 'Invalid request parameters or prompt content. Ensure the prompt complies with xAI content policies and try again.';
+      } else if (error.message.includes('401')) {
+        errorMessage = 'Invalid API key. Verify your xAI API key at https://console.x.ai.';
+      } else if (error.message.includes('429')) {
+        errorMessage = 'Rate limit exceeded. Wait and try again.';
+      }
+      throw new Error(`[GrokImageAdapter] Failed to generate image: ${errorMessage}`);
+    }
+  }
+}
 ===== src/adapters/text/GeminiTextAdapter.ts =====
 
 import type { LLMAdapter, LLMRequest, LLMResponse } from '../../core/Adapter';
@@ -4265,6 +4513,56 @@ export abstract class GrokBaseAdapter {
             throw error;
         }
     }
+
+    public static async fetchImageModels(apiKey: string): Promise<string[]> {
+        try {
+            if (!apiKey) {
+                throw new Error(`[GrokBaseAdapter] API key is required for fetching image models.`);
+            }
+            const url = 'https://api.x.ai/v1/image-generation-models';
+            console.log(`[GrokBaseAdapter] Sending image model fetch request:`, {
+                url,
+                headers: { Authorization: `Bearer ${apiKey.trim()}` }
+            });
+
+            const response = await requestUrl({
+                url,
+                method: 'GET',
+                headers: {
+                    Authorization: `Bearer ${apiKey.trim()}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (response.status >= 400) {
+                let errorMessage = `grok image models error: ${response.status}`;
+                try {
+                    const errorBody = response.json?.error?.message || response.text || 'No additional details';
+                    console.log(`[GrokBaseAdapter] Error response body:`, errorBody);
+                    errorMessage += ` - ${errorBody}`;
+                    if (response.status === 401) {
+                        errorMessage += '. Invalid API key. Verify your xAI API key at https://x.ai/api.';
+                    } else if (response.status === 403) {
+                        errorMessage += '. Check your API key, permissions, or account status at console.x.ai.';
+                    } else if (response.status === 429) {
+                        errorMessage += '. Rate limit exceeded. Try again later or check your xAI account at https://x.ai/api.';
+                    } else if (response.status >= 500) {
+                        errorMessage += '. Server error at xAI. Try again later or contact xAI support.';
+                    }
+                } catch {
+                    errorMessage += ' - Failed to parse error details';
+                }
+                throw new Error(errorMessage);
+            }
+
+            const models = (response.json as { models: { id: string }[] }).models?.map(m => m.id).sort() ?? [];
+            console.log(`[GrokBaseAdapter] Fetched image models:`, models);
+            return models;
+        } catch (error) {
+            console.error(`[GrokBaseAdapter] Image model fetch error:`, error);
+            throw error;
+        }
+    }
 }
 ===== src/adapters/base/GeminiBaseAdapter.ts =====
 
@@ -4699,6 +4997,7 @@ import type { MyPluginSettings } from '../settings/types';
 import { providerMetadata } from '../settings/providers/index';
 import type { ImageAdapter, ImageRequest, ImageResponse } from '../core/Adapter';
 import { OpenAIImageAdapter } from '../adapters/image/OpenAIImageAdapter';
+import { GrokImageAdapter } from '../adapters/image/GrokImageAdapter'; // Add this import
 
 export class ImageGateway {
   private adapters: Record<string, ImageAdapter> = {};
@@ -4743,6 +5042,9 @@ export class ImageGateway {
       switch (key) {
         case 'openai':
           adapter = new OpenAIImageAdapter(apiKey!, model);
+          break;
+        case 'grok':
+          adapter = new GrokImageAdapter(apiKey!, model);
           break;
         default:
           console.warn(`[ImageGateway] Unsupported image provider: ${key}`);
