@@ -1,10 +1,12 @@
-import { App, Notice, Setting } from 'obsidian';
+import { App, Notice } from 'obsidian';
 import type { MyPluginSettings } from '../../../settings/types';
 import type { SecretsManager } from '../../../utils/secrets';
 import { ImageGateway } from '../../../gateways/ImageGateway';
 import { ProviderSelector } from '../sections/ProviderSelector';
 import { PromptInput } from '../sections/PromptInput';
 import { PromptHistory } from '../sections/PromptHistory';
+import { ImageControls } from '../sections/ImageControls';
+import { ImageOutputViewer } from '../sections/ImageOutputViewer';
 import { ImageHistoryEntry, BaseHistoryEntry } from '../../../utils/historyManager';
 
 export class ImageConsoleTab {
@@ -16,16 +18,10 @@ export class ImageConsoleTab {
   private providerSelector: ProviderSelector;
   private promptInput: PromptInput;
   private promptHistory: PromptHistory;
+  private imageControls: ImageControls;
+  private imageOutputViewer: ImageOutputViewer;
   private validProviders = ['openai', 'stabilityai', 'grok'];
   private blobUrls: string[] = [];
-  private activeEntryImages: string[] = []; // Store active images (base64 strings)
-  private activeEntryFormat: string = 'png'; // Default format
-
-  private sizeDropdown?: HTMLSelectElement;
-  private nImagesInput?: HTMLInputElement;
-  private qualityDropdown?: HTMLSelectElement;
-  private outputFormatDropdown?: HTMLSelectElement;
-  private outputArea?: HTMLElement;
 
   private providerModels: Record<string, string[]> = {
     openai: ['dall-e-3', 'dall-e-2', 'gpt-image-1'],
@@ -34,36 +30,10 @@ export class ImageConsoleTab {
   };
 
   private defaultModels: Record<string, string> = {
-    openai: 'dall-e-3',
+    openai: 'gpt-image-1',
     stabilityai: 'stable-diffusion',
     grok: 'grok-image',
   };
-
-  private modelSizes: Record<string, string[]> = {
-    'dall-e-3': ['1024x1024', '1792x1024', '1024x1792'],
-    'dall-e-2': ['256x256', '512x512', '1024x1024'],
-    'gpt-image-1': ['1024x1024', '1536x1024', '1024x1536'],
-    'stable-diffusion': ['512x512', '1024x1024'],
-    'grok-image': ['1024x1024'],
-  };
-
-  private maxN: Record<string, number> = {
-    'dall-e-3': 1,
-    'dall-e-2': 10,
-    'gpt-image-1': 10,
-    'stable-diffusion': 4,
-    'grok-image': 1,
-  };
-
-  private modelQualities: Record<string, string[]> = {
-    'dall-e-3': ['standard', 'hd'],
-    'dall-e-2': [],
-    'gpt-image-1': ['low', 'medium', 'high', 'auto'],
-    'stable-diffusion': [],
-    'grok-image': [],
-  };
-
-  private outputFormats: string[] = ['png', 'jpeg', 'webp'];
 
   constructor(
     private app: App,
@@ -74,6 +44,8 @@ export class ImageConsoleTab {
     this.providerSelector = new ProviderSelector(app, settings, secrets, this.validProviders, this.providerModels);
     this.promptInput = new PromptInput();
     this.promptHistory = new PromptHistory();
+    this.imageControls = new ImageControls();
+    this.imageOutputViewer = new ImageOutputViewer();
     console.log('[ImageConsoleTab] Constructor initialized');
   }
 
@@ -105,58 +77,8 @@ export class ImageConsoleTab {
     const updateUI = () => {
       const provider = this.providerSelector.getSelectedProvider();
       const model = this.providerSelector.getSelectedModel() || this.defaultModels[provider] || 'dall-e-3';
-
       console.log('[ImageConsoleTab] updateUI called - Provider:', provider, 'Model:', model);
-
-      // Update size dropdown
-      if (this.sizeDropdown) {
-        const currentSize = this.sizeDropdown.value || '1024x1024';
-        this.sizeDropdown.innerHTML = '';
-        const sizes = this.modelSizes[model] || ['1024x1024'];
-        sizes.forEach(size => this.sizeDropdown!.add(new Option(size, size)));
-        this.sizeDropdown.value = sizes.includes(currentSize) ? currentSize : sizes[0];
-        console.log('[ImageConsoleTab] Updated size dropdown:', this.sizeDropdown.value);
-      }
-
-      // Update max n
-      if (this.nImagesInput) {
-        const max = this.maxN[model] || 1;
-        this.nImagesInput.max = max.toString();
-        const currentN = parseInt(this.nImagesInput.value) || 1;
-        this.nImagesInput.value = Math.min(currentN, max).toString();
-        console.log('[ImageConsoleTab] Updated n input: max=', max, 'value=', this.nImagesInput.value);
-      }
-
-      // Update quality dropdown
-      if (this.qualityDropdown?.parentElement?.parentElement) {
-        const qualitySetting = this.qualityDropdown.parentElement.parentElement as HTMLElement;
-        const qualities = this.modelQualities[model] || [];
-        if (qualities.length === 0) {
-          qualitySetting.style.display = 'none';
-        } else {
-          qualitySetting.style.display = 'block';
-          const currentQuality = this.qualityDropdown.value || qualities[0];
-          this.qualityDropdown.innerHTML = '';
-          qualities.forEach(q => this.qualityDropdown!.add(new Option(q.charAt(0).toUpperCase() + q.slice(1), q)));
-          this.qualityDropdown.value = qualities.includes(currentQuality) ? currentQuality : qualities[0];
-          console.log('[ImageConsoleTab] Updated quality dropdown:', this.qualityDropdown.value);
-        }
-      }
-
-      // Update output format dropdown
-      if (this.outputFormatDropdown?.parentElement?.parentElement) {
-        const outputFormatSetting = this.outputFormatDropdown.parentElement.parentElement as HTMLElement;
-        if (model === 'gpt-image-1') {
-          outputFormatSetting.style.display = 'block';
-          const currentFormat = this.outputFormatDropdown.value || 'png';
-          this.outputFormatDropdown.innerHTML = '';
-          this.outputFormats.forEach(f => this.outputFormatDropdown!.add(new Option(f.toUpperCase(), f)));
-          this.outputFormatDropdown.value = this.outputFormats.includes(currentFormat) ? currentFormat : 'png';
-          console.log('[ImageConsoleTab] Updated output format dropdown:', this.outputFormatDropdown.value);
-        } else {
-          outputFormatSetting.style.display = 'none';
-        }
-      }
+      this.imageControls.updateControls(model);
     };
 
     this.providerSelector.onProviderChange(updateUI);
@@ -169,39 +91,7 @@ export class ImageConsoleTab {
       promptTextarea.nextElementSibling.remove();
     }
 
-    const controlsRow = fixedSection.createEl('div', { cls: 'ai-console-controls-row' });
-
-    new Setting(controlsRow)
-      .setName('Size')
-      .addDropdown(dropdown => {
-        this.sizeDropdown = dropdown.selectEl;
-      })
-      .controlEl.style.flex = '0 0 auto';
-
-    new Setting(controlsRow)
-      .setName('N')
-      .addText(text => {
-        this.nImagesInput = text.inputEl;
-        this.nImagesInput.type = 'number';
-        this.nImagesInput.min = '1';
-        this.nImagesInput.value = '1';
-        this.nImagesInput.style.width = '50px';
-      })
-      .controlEl.style.flex = '0 0 auto';
-
-    new Setting(controlsRow)
-      .setName('Quality')
-      .addDropdown(dropdown => {
-        this.qualityDropdown = dropdown.selectEl;
-      })
-      .controlEl.style.flex = '0 0 auto';
-
-    new Setting(controlsRow)
-      .setName('Output Format')
-      .addDropdown(dropdown => {
-        this.outputFormatDropdown = dropdown.selectEl;
-      })
-      .controlEl.style.flex = '0 0 auto';
+    this.imageControls.render(fixedSection);
 
     const runButtonRow = fixedSection.createEl('div', { cls: 'ai-console-run-button-row' });
     const runButton = runButtonRow.createEl('button', { text: 'Run', cls: 'ai-console-run-btn' });
@@ -209,66 +99,11 @@ export class ImageConsoleTab {
 
     const scrollableSection = container.createEl('div', { cls: 'ai-console-scrollable-section' });
 
-    const outputSection = scrollableSection.createEl('div', { cls: 'ai-console-output-section' });
-    outputSection.createEl('h4', { text: 'Generated Images' });
-    this.outputArea = outputSection.createEl('div', { cls: 'ai-console-image-grid' });
-
+    this.imageOutputViewer.render(scrollableSection);
     this.promptHistory.render(scrollableSection, this.historyClickHandler.bind(this));
 
     this.providerSelector.setProvider('openai', this.defaultModels['openai']);
     updateUI();
-
-    const styleEl = container.createEl('style');
-    styleEl.textContent = `
-      .ai-console-fixed-section {
-        flex-shrink: 0;
-      }
-      .ai-console-scrollable-section {
-        flex: 1;
-        overflow-y: auto;
-        max-height: 300px;
-        padding-bottom: 16px;
-      }
-      .ai-console-image-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-        gap: 16px;
-      }
-      .ai-console-controls-row {
-        display: flex;
-        overflow-x: auto;
-        gap: 16px;
-        margin-bottom: 8px;
-        padding-bottom: 4px;
-        white-space: nowrap;
-      }
-      .ai-console-controls-row::-webkit-scrollbar {
-        height: 8px;
-      }
-      .ai-console-controls-row::-webkit-scrollbar-thumb {
-        background: #555;
-        border-radius: 4px;
-      }
-      .ai-console-controls-row::-webkit-scrollbar-track {
-        background: #333;
-      }
-      .ai-console-run-button-row {
-        display: flex;
-        justify-content: center;
-        margin-bottom: 16px;
-      }
-      .ai-console-run-btn {
-        background-color: #7d57c1;
-        color: white;
-        border: none;
-        padding: 8px 16px;
-        border-radius: 4px;
-        cursor: pointer;
-      }
-      .ai-console-run-btn:hover {
-        background-color: #5c3a9e;
-      }
-    `;
   }
 
   private async runPrompt() {
@@ -277,10 +112,10 @@ export class ImageConsoleTab {
     const provider = this.providerSelector.getSelectedProvider();
     const model = this.providerSelector.getSelectedModel() || this.defaultModels[provider] || 'dall-e-3';
     const prompt = this.promptInput.getPrompt().trim();
-    const size = this.sizeDropdown?.value || '1024x1024';
-    const n = parseInt(this.nImagesInput?.value || '1', 10) || 1;
-    const quality = this.qualityDropdown?.value || (model === 'dall-e-3' ? 'standard' : 'auto');
-    const output_format = this.outputFormatDropdown?.value || 'png';
+    const size = this.imageControls.getSize();
+    const n = this.imageControls.getN();
+    const quality = this.imageControls.getQuality();
+    const outputFormat = this.imageControls.getOutputFormat();
 
     if (!prompt) {
       new Notice('Please enter a prompt.');
@@ -312,7 +147,7 @@ export class ImageConsoleTab {
     };
 
     if (model === 'gpt-image-1') {
-      request.output_format = output_format;
+      request.output_format = outputFormat;
       if (quality && quality !== 'auto') {
         request.quality = quality;
       }
@@ -333,39 +168,27 @@ export class ImageConsoleTab {
     }
 
     try {
-      if (this.outputArea) {
-        this.outputArea.empty();
-        this.outputArea.setText('Generating...');
-      }
+      this.imageOutputViewer.setLoading();
 
       const result = await adapter.generate(request);
 
-      if (this.outputArea) {
-        this.outputArea.empty();
-        const base64Urls: string[] = result.imageUrls || [];
+      const base64Urls: string[] = result.imageUrls || [];
+      const format = model === 'gpt-image-1' ? outputFormat : 'png';
+      this.imageOutputViewer.setImages(base64Urls, format);
 
-        // Update active entry images
-        this.activeEntryImages = base64Urls;
-        this.activeEntryFormat = model === 'gpt-image-1' ? output_format : 'png';
+      const historyEntry: ImageHistoryEntry = {
+        provider,
+        model,
+        prompt,
+        imageUrls: base64Urls,
+        timestamp: new Date().toLocaleString(),
+        size,
+        quality,
+        output_format: model === 'gpt-image-1' ? outputFormat : undefined,
+      };
 
-        // Render the generated images
-        this.renderActiveImages();
-
-        // Add to history
-        const historyEntry: ImageHistoryEntry = {
-          provider,
-          model,
-          prompt,
-          imageUrls: base64Urls,
-          timestamp: new Date().toLocaleString(),
-          size,
-          quality,
-          output_format: model === 'gpt-image-1' ? output_format : undefined,
-        };
-
-        this.addToHistory(historyEntry);
-        console.log('[ImageConsoleTab] Image(s) generated, base64 count:', base64Urls.length);
-      }
+      this.addToHistory(historyEntry);
+      console.log('[ImageConsoleTab] Image(s) generated, base64 count:', base64Urls.length);
     } catch (error: any) {
       console.error('[ImageConsoleTab] Generation error:', error);
       let errorMessage = error.message || 'Unknown error';
@@ -373,46 +196,20 @@ export class ImageConsoleTab {
         errorMessage += '. Check model parameters.';
       }
       new Notice(`Failed to generate image: ${errorMessage}`);
-      if (this.outputArea) this.outputArea.setText(`Error: ${errorMessage}`);
+      this.imageOutputViewer.setError(errorMessage);
     }
-  }
-
-  private renderActiveImages() {
-    if (!this.outputArea) return;
-    this.outputArea.empty();
-
-    if (this.activeEntryImages.length === 0) {
-      this.outputArea.setText('No images to display.');
-      return;
-    }
-
-    this.activeEntryImages.forEach((base64, index) => {
-      try {
-        const mimeType = `image/${this.activeEntryFormat}`;
-        const dataUrl = `data:${mimeType};base64,${base64}`;
-        const img = this.outputArea!.createEl('img', {
-          attr: { src: dataUrl, style: 'max-width: 100%; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.2);' },
-        });
-        img.onerror = () => {
-          img.remove();
-          this.outputArea!.createEl('p', { text: `Failed to load image ${index + 1}.` });
-        };
-      } catch (e) {
-        console.error('[ImageConsoleTab] Failed to render image:', e);
-        this.outputArea!.createEl('p', { text: `Failed to render image ${index + 1}.` });
-      }
-    });
   }
 
   private historyClickHandler(entry: ImageHistoryEntry) {
-    this.activeEntryImages = entry.imageUrls || [];
-    this.activeEntryFormat = entry.output_format || 'png';
     this.providerSelector.setProvider(entry.provider, entry.model);
     this.promptInput.setPrompt(entry.prompt);
-    if (this.sizeDropdown) this.sizeDropdown.value = entry.size || '1024x1024';
-    if (this.qualityDropdown) this.qualityDropdown.value = entry.quality || (entry.model === 'dall-e-3' ? 'standard' : 'auto');
-    if (this.outputFormatDropdown && entry.output_format) this.outputFormatDropdown.value = entry.output_format;
-    this.renderActiveImages();
+    this.imageControls.setControls(
+      entry.size || '1024x1024',
+      1, // N is not stored in history, default to 1
+      entry.quality || (entry.model === 'dall-e-3' ? 'standard' : 'auto'),
+      entry.output_format || 'png'
+    );
+    this.imageOutputViewer.setImages(entry.imageUrls || [], entry.output_format || 'png');
     console.log('[ImageConsoleTab] History entry selected:', entry);
   }
 
@@ -423,18 +220,17 @@ export class ImageConsoleTab {
       }
     });
     this.blobUrls = [];
-    this.activeEntryImages = [];
     this.providerSelector.cleanup();
     this.promptInput.cleanup();
     this.promptHistory.cleanup();
+    this.imageControls.cleanup();
+    this.imageOutputViewer.cleanup();
   }
 
   renderHistory(history: BaseHistoryEntry[]) {
     console.log('[ImageConsoleTab] Rendering history:', history);
     const imageHistory = history as ImageHistoryEntry[];
     this.promptHistory.updateHistory(imageHistory, this.historyClickHandler.bind(this));
-
-    // Do not set activeEntryImages here; keep it empty until user interaction
-    this.renderActiveImages();
+    // Removed the line that clears the ImageOutputViewer: this.imageOutputViewer.setImages([], 'png');
   }
 }
